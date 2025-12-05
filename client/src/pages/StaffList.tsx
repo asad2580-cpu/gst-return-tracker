@@ -1,18 +1,34 @@
-import { useStore } from '@/lib/mockData';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { Users, Briefcase } from 'lucide-react';
+import { Users, Briefcase, Loader2 } from 'lucide-react';
+import type { User, Client, GstReturn } from '@shared/schema';
+
+type ClientWithReturns = Client & { returns: GstReturn[] };
 
 export default function StaffList() {
-  const { users, clients } = useStore();
+  const { data: staff, isLoading: staffLoading } = useQuery<User[]>({
+    queryKey: ['/api/users/staff'],
+  });
 
-  // Get only staff members
-  const staffMembers = users.filter(u => u.role === 'staff');
+  const { data: clients } = useQuery<ClientWithReturns[]>({
+    queryKey: ['/api/clients'],
+  });
 
   const getClientCount = (staffId: string) => {
-    return clients.filter(c => c.assignedToId === staffId).length;
+    return (clients || []).filter(c => c.assignedToId === staffId).length;
   };
+
+  if (staffLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const staffMembers = staff || [];
 
   return (
     <div className="space-y-6">
@@ -22,16 +38,15 @@ export default function StaffList() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {staffMembers.map(staff => (
-          <Card key={staff.id} className="hover:border-primary/50 transition-colors group">
+        {staffMembers.map(staffMember => (
+          <Card key={staffMember.id} className="hover:border-primary/50 transition-colors group" data-testid={`card-staff-${staffMember.id}`}>
             <CardHeader className="flex flex-row items-center gap-4 pb-2">
               <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-                <AvatarImage src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${staff.name}`} />
-                <AvatarFallback>{staff.name.charAt(0)}</AvatarFallback>
+                <AvatarFallback>{staffMember.name.charAt(0)}</AvatarFallback>
               </Avatar>
               <div>
-                <CardTitle className="text-lg">{staff.name}</CardTitle>
-                <CardDescription>{staff.email}</CardDescription>
+                <CardTitle className="text-lg">{staffMember.name}</CardTitle>
+                <CardDescription>{staffMember.email}</CardDescription>
               </div>
             </CardHeader>
             <CardContent>
@@ -40,21 +55,23 @@ export default function StaffList() {
                   <Briefcase className="h-4 w-4" />
                   Assigned Clients
                 </div>
-                <Badge variant="secondary" className="text-lg px-3 py-1">
-                  {getClientCount(staff.id)}
+                <Badge variant="secondary" className="text-lg px-3 py-1" data-testid={`badge-count-${staffMember.id}`}>
+                  {getClientCount(staffMember.id)}
                 </Badge>
               </div>
             </CardContent>
           </Card>
         ))}
         
-        <Card className="border-dashed border-2 flex flex-col items-center justify-center p-6 hover:bg-accent/50 hover:border-primary/50 transition-all cursor-not-allowed opacity-60">
-          <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3">
-            <Users className="h-6 w-6 text-muted-foreground" />
-          </div>
-          <h3 className="text-lg font-medium text-muted-foreground">Add New Staff</h3>
-          <p className="text-xs text-muted-foreground mt-1">Contact system admin</p>
-        </Card>
+        {staffMembers.length === 0 && (
+          <Card className="border-dashed border-2 flex flex-col items-center justify-center p-6">
+            <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3">
+              <Users className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <h3 className="text-lg font-medium text-muted-foreground">No Staff Members</h3>
+            <p className="text-xs text-muted-foreground mt-1">Register staff users to get started</p>
+          </Card>
+        )}
       </div>
     </div>
   );

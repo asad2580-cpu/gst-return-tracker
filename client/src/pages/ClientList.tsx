@@ -1,13 +1,19 @@
 import { useState } from 'react';
-import { useStore, GSTStatus, Client } from '@/lib/mockData';
+import { useAuth } from '@/hooks/use-auth';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { queryClient, apiRequest } from '@/lib/queryClient';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Search, Filter, UserCog } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
+import { Search, Filter, UserCog, Loader2 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import type { Client, GstReturn, User, UpdateGstReturn } from '@shared/schema';
+
+type ClientWithReturns = Client & { returns: GstReturn[] };
+type GSTStatus = 'Pending' | 'Filed' | 'Late';
 
 const StatusBadge = ({ status, onClick, canEdit }: { status: GSTStatus, onClick?: () => void, canEdit: boolean }) => {
   const styles = {
@@ -27,39 +33,76 @@ const StatusBadge = ({ status, onClick, canEdit }: { status: GSTStatus, onClick?
 };
 
 export default function ClientList() {
-  const { currentUser, clients, users, updateClientStatus, assignClient } = useStore();
+  const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<GSTStatus | 'All'>('All');
 
-  const isAdmin = currentUser?.role === 'admin';
+  const { data: clients, isLoading } = useQuery<ClientWithReturns[]>({
+    queryKey: ['/api/clients'],
+  });
 
-  // Filter logic
-  const filteredClients = clients.filter(client => {
+  const { data: staff } = useQuery<User[]>({
+    queryKey: ['/api/users/staff'],
+    enabled: user?.role === 'admin',
+  });
+
+  const updateReturnMutation = useMutation({
+    mutationFn: async ({ returnId, update }: { returnId: string, update: UpdateGstReturn }) => {
+      const res = await apiRequest('PATCH', `/api/returns/${returnId}`, update);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
+    },
+  });
+
+  const assignClientMutation = useMutation({
+    mutationFn: async ({ clientId, staffId }: { clientId: string, staffId: string }) => {
+      const res = await apiRequest('PATCH', `/api/clients/${clientId}/assign`, { staffId });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
+    },
+  });
+
+  const isAdmin = user?.role === 'admin';
+
+  const filteredClients = (clients || []).filter(client => {
     const matchesSearch = client.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           client.gstin.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesAssignment = isAdmin ? true : client.assignedToId === currentUser?.id;
-    
-    // Basic status filter implementation (checks if ANY return matches for simplicity in this mock)
     const matchesStatus = statusFilter === 'All' ? true : client.returns.some(r => r.gstr1 === statusFilter || r.gstr3b === statusFilter);
 
-    return matchesSearch && matchesAssignment && matchesStatus;
+    return matchesSearch && matchesStatus;
   });
 
   const months = ['2025-01', '2025-02', '2025-03'];
 
-  const handleStatusChange = (client: Client, month: string, type: 'gstr1' | 'gstr3b') => {
-    // Cycle status: Pending -> Filed -> Late -> Pending
+  const handleStatusChange = (client: ClientWithReturns, month: string, type: 'gstr1' | 'gstr3b') => {
     const currentReturn = client.returns.find(r => r.month === month);
-    const currentStatus = currentReturn ? currentReturn[type] : 'Pending';
+    if (!currentReturn) return;
+
+    const currentStatus = currentReturn[type];
     
     let nextStatus: GSTStatus = 'Pending';
     if (currentStatus === 'Pending') nextStatus = 'Filed';
     else if (currentStatus === 'Filed') nextStatus = 'Late';
     else if (currentStatus === 'Late') nextStatus = 'Pending';
 
-    updateClientStatus(client.id, month, type, nextStatus);
+    updateReturnMutation.mutate({
+      returnId: currentReturn.id,
+      update: { [type]: nextStatus }
+    });
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -76,10 +119,11 @@ export default function ClientList() {
               className="pl-8" 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
+              data-testid="input-search-clients"
             />
           </div>
           <Select value={statusFilter} onValueChange={(v: any) => setStatusFilter(v)}>
-            <SelectTrigger className="w-[140px]">
+            <SelectTrigger className="w-[140px]" data-testid="select-filter-status">
               <Filter className="mr-2 h-4 w-4" />
               <SelectValue placeholder="Status" />
             </SelectTrigger>
@@ -109,7 +153,7 @@ export default function ClientList() {
             </TableHeader>
             <TableBody>
               {filteredClients.map(client => (
-                <TableRow key={client.id} className="group hover:bg-muted/30 transition-colors">
+                <TableRow key={client.id} className="group hover:bg-muted/30 transition-colors" data-testid={`row-client-${client.id}`}>
                   <TableCell className="font-medium">
                     <div className="flex flex-col">
                       <span className="text-sm text-foreground">{client.name}</span>
@@ -121,21 +165,22 @@ export default function ClientList() {
                     <TableCell>
                       <Popover>
                         <PopoverTrigger asChild>
-                          <Button variant="ghost" size="sm" className="h-8 px-2 text-xs font-normal">
+                          <Button variant="ghost" size="sm" className="h-8 px-2 text-xs font-normal" data-testid={`button-assign-${client.id}`}>
                             <UserCog className="mr-2 h-3 w-3" />
-                            {users.find(u => u.id === client.assignedToId)?.name || 'Unassigned'}
+                            {staff?.find(u => u.id === client.assignedToId)?.name || 'Unassigned'}
                           </Button>
                         </PopoverTrigger>
                         <PopoverContent className="w-[200px] p-0" align="start">
                           <div className="p-2">
                             <p className="text-xs font-medium text-muted-foreground mb-2 px-2">Assign to Staff</p>
-                            {users.filter(u => u.role === 'staff').map(staff => (
+                            {staff?.map(staffMember => (
                               <div 
-                                key={staff.id}
+                                key={staffMember.id}
                                 className="flex items-center px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm cursor-pointer"
-                                onClick={() => assignClient(client.id, staff.id)}
+                                onClick={() => assignClientMutation.mutate({ clientId: client.id, staffId: staffMember.id })}
+                                data-testid={`option-assign-${staffMember.id}`}
                               >
-                                {staff.name}
+                                {staffMember.name}
                               </div>
                             ))}
                           </div>
@@ -154,7 +199,7 @@ export default function ClientList() {
                             <StatusBadge 
                               status={returnData?.gstr1 || 'Pending'} 
                               canEdit={true}
-                              onClick={() => handleStatusChange(client, month, 'gstr1')}
+                              onClick={() => returnData && handleStatusChange(client, month, 'gstr1')}
                             />
                           </div>
                           <div className="flex items-center gap-2 w-full justify-between px-2">
@@ -162,7 +207,7 @@ export default function ClientList() {
                             <StatusBadge 
                               status={returnData?.gstr3b || 'Pending'} 
                               canEdit={true}
-                              onClick={() => handleStatusChange(client, month, 'gstr3b')}
+                              onClick={() => returnData && handleStatusChange(client, month, 'gstr3b')}
                             />
                           </div>
                         </div>
@@ -171,6 +216,13 @@ export default function ClientList() {
                   })}
                 </TableRow>
               ))}
+              {filteredClients.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={isAdmin ? months.length + 2 : months.length + 1} className="text-center py-8">
+                    <p className="text-sm text-muted-foreground">No clients found</p>
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         </CardContent>
