@@ -65,8 +65,31 @@ export async function registerRoutes(
         return res.status(400).send(fromZodError(validation.error).toString());
       }
 
+      const existingClient = await storage.getClientByGstin(validation.data.gstin);
+      if (existingClient) {
+        return res.status(400).send("A client with this GSTIN already exists");
+      }
+
       const client = await storage.createClient(validation.data);
-      res.status(201).json(client);
+
+      const currentDate = new Date();
+      const months = [];
+      for (let i = 0; i < 3; i++) {
+        const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+        months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+      }
+
+      for (const month of months) {
+        await storage.createReturn({
+          clientId: client.id,
+          month,
+          gstr1: 'Pending',
+          gstr3b: 'Pending',
+        });
+      }
+
+      const returns = await storage.getReturnsByClientId(client.id);
+      res.status(201).json({ ...client, returns });
     } catch (error) {
       next(error);
     }
@@ -117,16 +140,18 @@ export async function registerRoutes(
         return res.status(403).send("Forbidden: Cannot modify other staff's clients");
       }
 
-      const validation = insertGstReturnSchema.safeParse({
-        ...req.body,
-        clientId: req.params.clientId,
-      });
-
-      if (!validation.success) {
-        return res.status(400).send(fromZodError(validation.error).toString());
+      const existingReturn = await storage.getReturnByClientAndMonth(req.params.clientId, req.body.month);
+      if (existingReturn) {
+        return res.json(existingReturn);
       }
 
-      const gstReturn = await storage.createReturn(validation.data);
+      const gstReturn = await storage.createReturn({
+        clientId: req.params.clientId,
+        month: req.body.month,
+        gstr1: 'Pending',
+        gstr3b: 'Pending',
+      });
+      
       res.status(201).json(gstReturn);
     } catch (error) {
       next(error);

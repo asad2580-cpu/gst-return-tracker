@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useLocation } from 'wouter';
+import { useState, useEffect } from 'react';
+import { useLocation, Redirect } from 'wouter';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,8 +22,7 @@ export default function Login() {
   });
 
   if (user) {
-    setLocation('/dashboard');
-    return null;
+    return <Redirect to="/dashboard" />;
   }
 
   const handleLogin = (e: React.FormEvent) => {
