@@ -1,3 +1,4 @@
+import { queryClient } from "@/lib/queryClient";
 import { useState } from "react";
 import { useLocation, Redirect } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
@@ -51,10 +52,15 @@ export default function Login() {
         role: registerForm.role,
         adminEmail: registerForm.adminEmail,
       },
-      { onSuccess: () => setLocation("/dashboard") }
+      {
+        onSuccess: () => {
+          // Refresh the staff list in case admin registers a staff member
+          queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+          setLocation("/dashboard");
+        },
+      }
     );
   };
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="absolute inset-0 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px] [mask-image:radial-gradient(ellipse_50%_50%_at_50%_50%,#000_70%,transparent_100%)] opacity-50 pointer-events-none" />

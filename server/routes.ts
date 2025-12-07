@@ -1,10 +1,7 @@
 import db from "./simple-db";
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
 import { setupAuth } from "./auth";
-import { insertClientSchema, insertGstReturnSchema, updateGstReturnSchema } from "@shared/schema";
-import { fromZodError } from "zod-validation-error";
 import { attachUserFromHeader } from "./auth";
 
 
@@ -26,8 +23,6 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-
-
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -36,64 +31,80 @@ export async function registerRoutes(
   app.use(attachUserFromHeader);
 
   // Admin: list staff created by the logged-in admin
-// Admin: list staff created by the logged-in admin
-app.get("/api/users", requireAdmin, async (req: any, res: any, next: any) => {
-  try {
-    const adminId = req.user?.id;
-    if (!adminId) return res.status(401).json({ error: "Unauthorized" });
-
-    // Direct SQLite query - simple and clean!
-    const rows = db
-      .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
-      .all(adminId);
-
-    return res.json(rows);
-  } catch (error) {
-    console.error("Error fetching staff:", error);
-    next(error);
-  }
-});
-
-
-  app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
-  try {
-    const user = req.user;
-    let clientsList;
-    
-    if (user.role === 'admin') {
-      clientsList = await storage.getClients();
-    } else {
-      clientsList = await storage.getClientsByStaffId(user.id);
-    }
-
-    const clientsWithReturns = await Promise.all(
-      clientsList.map(async (client: any) => {
-        const returns = await storage.getReturnsByClientId(client.id);
-        return { ...client, returns };
-      })
-    );
-
-    res.json(clientsWithReturns);
-  } catch (error) {
-    next(error);
-  }
-});
-
-
-  app.post("/api/clients", requireAdmin, async (req, res, next) => {
+  app.get("/api/users", requireAdmin, async (req: any, res: any, next: any) => {
     try {
-      const validation = insertClientSchema.safeParse(req.body);
-      if (!validation.success) {
-        return res.status(400).send(fromZodError(validation.error).toString());
+      const adminId = req.user?.id;
+      if (!adminId) return res.status(401).json({ error: "Unauthorized" });
+
+      // Direct SQLite query - simple and clean!
+      const rows = db
+        .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
+        .all(adminId);
+
+      return res.json(rows);
+    } catch (error) {
+      console.error("Error fetching staff:", error);
+      next(error);
+    }
+  });
+
+  // Get all clients (admin sees all, staff sees only assigned)
+  app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
+    try {
+      const user = req.user;
+      let clientsList;
+      
+      if (user.role === 'admin') {
+        // Admin sees ALL clients
+        clientsList = db.prepare("SELECT * FROM clients").all();
+      } else {
+        // Staff only sees their assigned clients
+        clientsList = db.prepare("SELECT * FROM clients WHERE assignedToId = ?").all(user.id);
       }
 
-      const existingClient = await storage.getClientByGstin(validation.data.gstin);
+      // Get returns for each client
+      const clientsWithReturns = clientsList.map((client: any) => {
+        const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
+        return { ...client, returns };
+      });
+
+      res.json(clientsWithReturns);
+    } catch (error) {
+      console.error("Error fetching clients:", error);
+      next(error);
+    }
+  });
+
+  // Create a new client (admin only)
+  app.post("/api/clients", requireAdmin, async (req, res, next) => {
+    try {
+      const { name, gstin, assignedToId } = req.body;
+      
+      // Validate inputs
+      if (!name || !gstin || !assignedToId) {
+        return res.status(400).send("Missing required fields: name, gstin, or assignedToId");
+      }
+
+      // Validate GSTIN format (15 characters)
+      const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+      if (!gstinRegex.test(gstin.toUpperCase())) {
+        return res.status(400).send("Invalid GSTIN format");
+      }
+
+      // Check if GSTIN already exists
+      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ?").get(gstin);
       if (existingClient) {
         return res.status(400).send("A client with this GSTIN already exists");
       }
 
-      const client = await storage.createClient(validation.data);
+      // Insert new client
+      const result = db.prepare(
+        "INSERT INTO clients (name, gstin, assignedToId) VALUES (?, ?, ?)"
+      ).run(name, gstin, assignedToId);
 
+      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.lastInsertRowid);
+
+      // Create returns for last 3 months
       const currentDate = new Date();
       const months = [];
       for (let i = 0; i < 3; i++) {
@@ -102,118 +113,146 @@ app.get("/api/users", requireAdmin, async (req: any, res: any, next: any) => {
       }
 
       for (const month of months) {
-        await storage.createReturn({
-          clientId: client.id,
-          month,
-          gstr1: 'Pending',
-          gstr3b: 'Pending',
-        });
+        db.prepare(
+          "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
+        ).run(client.id, month);
       }
 
-      const returns = await storage.getReturnsByClientId(client.id);
+      const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
       res.status(201).json({ ...client, returns });
     } catch (error) {
+      console.error("Error creating client:", error);
       next(error);
     }
   });
 
+  // Reassign client to different staff (admin only)
   app.patch("/api/clients/:id/assign", requireAdmin, async (req: any, res: any, next: any) => {
-  try {
-    const { staffId } = req.body;
-    if (!staffId) {
-      return res.status(400).send("staffId is required");
+    try {
+      const { staffId } = req.body;
+      if (!staffId) {
+        return res.status(400).send("staffId is required");
+      }
+
+      // Check if client exists
+      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
+      if (!client) {
+        return res.status(404).send("Client not found");
+      }
+
+      // Update assignment
+      db.prepare("UPDATE clients SET assignedToId = ? WHERE id = ?").run(staffId, req.params.id);
+      const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
+      
+      res.json(updatedClient);
+    } catch (error) {
+      console.error("Error assigning client:", error);
+      next(error);
     }
+  });
 
-    const client = await storage.updateClientAssignment(req.params.id, staffId);
-    res.json(client);
-  } catch (error) {
-    next(error);
-  }
-});
-
-
+  // Get returns for a specific client
   app.get("/api/clients/:clientId/returns", requireAuth, async (req: any, res: any, next: any) => {
-  try {
-    const client = await storage.getClient(req.params.clientId);
-    if (!client) {
-      return res.status(404).send("Client not found");
+    try {
+      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.clientId);
+      if (!client) {
+        return res.status(404).send("Client not found");
+      }
+
+      const user = req.user;
+      if (user.role !== 'admin' && client.assignedToId !== user.id) {
+        return res.status(403).send("Forbidden: Cannot access other staff's clients");
+      }
+
+      const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(req.params.clientId);
+      res.json(returns);
+    } catch (error) {
+      console.error("Error fetching returns:", error);
+      next(error);
     }
+  });
 
-    const user = req.user;
-    if (user.role !== 'admin' && client.assignedToId !== user.id) {
-      return res.status(403).send("Forbidden: Cannot access other staff's clients");
-    }
-
-    const returns = await storage.getReturnsByClientId(req.params.clientId);
-    res.json(returns);
-  } catch (error) {
-    next(error);
-  }
-});
-
-
+  // Create a return for a specific month (if it doesn't exist)
   app.post("/api/clients/:clientId/returns", requireAuth, async (req: any, res: any, next: any) => {
-  try {
-    const client = await storage.getClient(req.params.clientId);
-    if (!client) {
-      return res.status(404).send("Client not found");
+    try {
+      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.clientId);
+      if (!client) {
+        return res.status(404).send("Client not found");
+      }
+
+      const user = req.user;
+      if (user.role !== 'admin' && client.assignedToId !== user.id) {
+        return res.status(403).send("Forbidden: Cannot modify other staff's clients");
+      }
+
+      const { month } = req.body;
+      if (!month) {
+        return res.status(400).send("Month is required");
+      }
+
+      // Check if return already exists for this month
+      const existingReturn = db.prepare(
+        "SELECT * FROM gstReturns WHERE clientId = ? AND month = ?"
+      ).get(req.params.clientId, month);
+      
+      if (existingReturn) {
+        return res.json(existingReturn);
+      }
+
+      // Create new return
+      const result = db.prepare(
+        "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
+      ).run(req.params.clientId, month);
+
+      const gstReturn = db.prepare("SELECT * FROM gstReturns WHERE id = ?").get(result.lastInsertRowid);
+      res.status(201).json(gstReturn);
+    } catch (error) {
+      console.error("Error creating return:", error);
+      next(error);
     }
+  });
 
-    const user = req.user;
-    if (user.role !== 'admin' && client.assignedToId !== user.id) {
-      return res.status(403).send("Forbidden: Cannot modify other staff's clients");
-    }
-
-    const existingReturn = await storage.getReturnByClientAndMonth(req.params.clientId, req.body.month);
-    if (existingReturn) {
-      return res.json(existingReturn);
-    }
-
-    const gstReturn = await storage.createReturn({
-      clientId: req.params.clientId,
-      month: req.body.month,
-      gstr1: 'Pending',
-      gstr3b: 'Pending',
-    });
-    
-    res.status(201).json(gstReturn);
-  } catch (error) {
-    next(error);
-  }
-});
-
+  // Update return status (GSTR-1 or GSTR-3B)
   app.patch("/api/returns/:id", requireAuth, async (req: any, res: any, next: any) => {
-  try {
-    const validation = updateGstReturnSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).send(fromZodError(validation.error).toString());
+    try {
+      const { gstr1, gstr3b } = req.body;
+      
+      // Build update query dynamically based on what fields are provided
+      const updates = [];
+      const values = [];
+      
+      if (gstr1 !== undefined) {
+        updates.push("gstr1 = ?");
+        values.push(gstr1);
+      }
+      if (gstr3b !== undefined) {
+        updates.push("gstr3b = ?");
+        values.push(gstr3b);
+      }
+      
+      if (updates.length === 0) {
+        return res.status(400).send("No fields to update");
+      }
+      
+      // Add return ID to end of values array
+      values.push(req.params.id);
+      
+      // Execute update
+      db.prepare(`UPDATE gstReturns SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      
+      // Return updated record
+      const gstReturn = db.prepare("SELECT * FROM gstReturns WHERE id = ?").get(req.params.id);
+      
+      if (!gstReturn) {
+        return res.status(404).send("Return not found");
+      }
+      
+      res.json(gstReturn);
+    } catch (error) {
+      console.error("Error updating return:", error);
+      next(error);
     }
-
-    const gstReturn = await storage.updateReturn(req.params.id, validation.data);
-    res.json(gstReturn);
-  } catch (error) {
-    next(error);
-  }
-});
-// Admin: list staff created by this admin
-// app.get("/api/users/staff", requireAdmin, async (req, res, next) => {
-//   try {
-//     // req.user is set by your auth middleware
-//     const adminId = req.user?.id;
-//     if (!adminId) return res.status(401).json({ error: "Unauthorized" });
-
-//     // Query users table for staff created by this admin
-//     const rows = db
-//       .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
-//       .all(adminId);
-
-//     res.json(rows);
-//   } catch (err) {
-//     next(err);
-//   }
-// });
-
-
+  });
 
   return httpServer;
 }
