@@ -36,22 +36,23 @@ export async function registerRoutes(
   app.use(attachUserFromHeader);
 
   // Admin: list staff created by the logged-in admin
+// Admin: list staff created by the logged-in admin
 app.get("/api/users", requireAdmin, async (req: any, res: any, next: any) => {
   try {
-    // If your storage helper already supports filtering by admin, use that instead.
-    // Here we call getAllStaff() and filter by created_by field.
-    const allStaff = await storage.getAllStaff(); // should return array of staff users
     const adminId = req.user?.id;
+    if (!adminId) return res.status(401).json({ error: "Unauthorized" });
 
-    // If storage items include created_by, filter locally:
-    const staffForAdmin = allStaff.filter((s: any) => s.created_by === adminId);
+    // Direct SQLite query - simple and clean!
+    const rows = db
+      .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
+      .all(adminId);
 
-    return res.json(staffForAdmin);
+    return res.json(rows);
   } catch (error) {
+    console.error("Error fetching staff:", error);
     next(error);
   }
 });
-
 
 
   app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
@@ -195,22 +196,22 @@ app.get("/api/users", requireAdmin, async (req: any, res: any, next: any) => {
   }
 });
 // Admin: list staff created by this admin
-app.get("/api/users/staff", requireAdmin, async (req, res, next) => {
-  try {
-    // req.user is set by your auth middleware
-    const adminId = req.user?.id;
-    if (!adminId) return res.status(401).json({ error: "Unauthorized" });
+// app.get("/api/users/staff", requireAdmin, async (req, res, next) => {
+//   try {
+//     // req.user is set by your auth middleware
+//     const adminId = req.user?.id;
+//     if (!adminId) return res.status(401).json({ error: "Unauthorized" });
 
-    // Query users table for staff created by this admin
-    const rows = db
-      .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
-      .all(adminId);
+//     // Query users table for staff created by this admin
+//     const rows = db
+//       .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
+//       .all(adminId);
 
-    res.json(rows);
-  } catch (err) {
-    next(err);
-  }
-});
+//     res.json(rows);
+//   } catch (err) {
+//     next(err);
+//   }
+// });
 
 
 

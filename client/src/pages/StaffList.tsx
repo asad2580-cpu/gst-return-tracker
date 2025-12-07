@@ -17,7 +17,7 @@ type ClientWithReturns = Client & { returns: GstReturn[] };
 export default function StaffList() {
   // fetch staff created by the logged-in admin (server enforces admin-only)
   const { data: staff, isLoading: staffLoading } = useQuery<User[]>({
-    queryKey: ["/api/users/staff"],
+    queryKey: ["/api/users"],
     queryFn: getQueryFn({ on401: "returnNull" }), // <-- use returnNull (valid option)
   });
 
