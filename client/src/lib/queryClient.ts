@@ -7,20 +7,53 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
-export async function apiRequest(
-  method: string,
-  url: string,
-  data?: unknown | undefined,
-): Promise<Response> {
-  const res = await fetch(url, {
+// client/src/lib/queryClient.ts  (or wherever your apiRequest lives)
+// client/src/lib/queryClient.ts  (or wherever your apiRequest lives)
+export async function apiRequest(method: string, path: string, body?: any) {
+  // ensure path starts with /api
+  const apiPath = path.startsWith("/api") ? path : `/api${path.startsWith("/") ? path : "/" + path}`;
+
+  const headers: Record<string, string> = {};
+
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  // attach access token if available
+  try {
+    const token = localStorage.getItem("accessToken");
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  } catch (e) {
+    // ignore localStorage errors in some environments
+  }
+
+  const res = await fetch(apiPath, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
-  await throwIfResNotOk(res);
-  return res;
+  // read raw text first
+  const text = await res.text();
+  const contentType = res.headers.get("content-type") || "";
+
+  if (!res.ok) {
+    // server returned an error — include body (HTML or JSON) in the Error message
+    const message = text || res.statusText || `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+
+  // If response is JSON, parse and return it
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error("Invalid JSON response from server");
+    }
+  }
+
+  // Otherwise return raw text (useful for debugging)
+  return text;
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";

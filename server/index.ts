@@ -1,3 +1,5 @@
+import cors from "cors";
+import authRouter from "./auth";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -60,6 +62,24 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+    // ---------------------------
+  // CORS + auth routes (paste here)
+  // ---------------------------
+  app.use(
+    cors({
+      origin: "http://localhost:5000", // change if your frontend runs on another port
+      credentials: true, // allow cookies to be sent/received
+    }),
+  );
+
+  // If you prefer app-level cookie parsing (optional)
+  // import cookieParser from "cookie-parser";
+  // app.use(cookieParser());
+
+  // Mount auth router at /api/auth
+  app.use("/api/auth", authRouter);
+  // ---------------------------
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -85,14 +105,17 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
+    // Windows does not support reusePort — enable it only on supported platforms
+  const listenOpts: any = {
+    port,
+    host: "0.0.0.0",
+  };
+
+  if (process.platform !== "win32") {
+    listenOpts.reusePort = true;
+  }
+
+  httpServer.listen(listenOpts, () => {
+    log(`serving on port ${port}`);
+  });
 })();
