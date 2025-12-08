@@ -26,4 +26,3 @@ declare module "express-serve-static-core" {
   }
 }
 // Tell TS that better-sqlite3 is a module (no @types needed)
-declare module "better-sqlite3";
