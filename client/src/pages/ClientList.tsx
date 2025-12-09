@@ -1,4 +1,6 @@
-import { useState } from "react";
+import React, { useMemo, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -21,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -49,8 +51,21 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import type { Client, GstReturn, User, UpdateGstReturn } from "@shared/schema";
 
+// Local types
 type ClientWithReturns = Client & { returns: GstReturn[] };
 type GSTStatus = "Pending" | "Filed" | "Late";
+
+type NewClient = {
+  name: string;
+  gstin: string;
+  assignedToId: string;
+  gstUsername?: string;
+  gstPassword?: string;
+  remarks?: string;
+  // new: how to treat previous returns when creating the client
+  // values: "none" (default) or "mark_all_previous" (mark previous returns as Filed)
+  previousReturns?: "none" | "mark_all_previous";
+};
 
 const StatusBadge = ({
   status,
@@ -63,7 +78,7 @@ const StatusBadge = ({
   canEdit: boolean;
   dueDate?: string;
 }) => {
-  const styles = {
+  const styles: Record<GSTStatus, string> = {
     Filed:
       "bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400",
     Pending:
@@ -95,11 +110,9 @@ function getFinancialYearMonths() {
   const currentYear = today.getFullYear();
 
   let fyStart = currentYear;
-  if (currentMonth < 3) {
-    fyStart = currentYear - 1;
-  }
+  if (currentMonth < 3) fyStart = currentYear - 1;
 
-  const months = [];
+  const months: string[] = [];
   for (let i = 0; i < 12; i++) {
     const monthIndex = (3 + i) % 12;
     const year = monthIndex < 3 ? fyStart + 1 : fyStart;
@@ -112,12 +125,11 @@ function getFinancialYearMonths() {
     "0"
   )}`;
   const currentMonthIndex = months.indexOf(currentMonthStr);
-
   const startIndex = Math.max(0, currentMonthIndex - 2);
   return months.slice(startIndex, startIndex + 6);
 }
 
-function getDueDate(month: string, returnType: "gstr1" | "gstr3b"): string {
+function getDueDate(month: string, returnType: "gstr1" | "gstr3b") {
   const [year, mon] = month.split("-");
   const nextMonth = parseInt(mon) === 12 ? 1 : parseInt(mon) + 1;
   const nextYear = parseInt(mon) === 12 ? parseInt(year) + 1 : parseInt(year);
@@ -125,7 +137,7 @@ function getDueDate(month: string, returnType: "gstr1" | "gstr3b"): string {
   return `${dueDay}/${String(nextMonth).padStart(2, "0")}`;
 }
 
-function isOverdue(month: string, returnType: "gstr1" | "gstr3b"): boolean {
+function isOverdue(month: string, returnType: "gstr1" | "gstr3b") {
   const today = new Date();
   const [year, mon] = month.split("-");
   const nextMonth = parseInt(mon) === 12 ? 1 : parseInt(mon) + 1;
@@ -138,15 +150,20 @@ function isOverdue(month: string, returnType: "gstr1" | "gstr3b"): boolean {
 export default function ClientList() {
   const { user } = useAuth();
   const { toast } = useToast();
+
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<GSTStatus | "All">("All");
   const [isAddClientOpen, setIsAddClientOpen] = useState(false);
-  const [staffSearchOpen, setStaffSearchOpen] = useState(false); // ← NEW
-  const [staffSearchQuery, setStaffSearchQuery] = useState(""); // ← NEW
-  const [newClient, setNewClient] = useState({
+  const [staffSearchOpen, setStaffSearchOpen] = useState(false);
+  const [staffSearchQuery, setStaffSearchQuery] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [newClient, setNewClient] = useState<NewClient>({
     name: "",
     gstin: "",
     assignedToId: "",
+    gstUsername: "",
+    gstPassword: "",
+    remarks: "",
   });
 
   const { data: clients, isLoading } = useQuery<ClientWithReturns[]>({
@@ -201,28 +218,116 @@ export default function ClientList() {
   });
 
   const addClientMutation = useMutation({
-    mutationFn: async (clientData: {
-      name: string;
-      gstin: string;
-      assignedToId: string;
-    }) => {
+    mutationFn: async (clientData: NewClient) => {
       const res = await apiRequest("POST", "/api/clients", clientData);
-      return res.json();
+      const data =
+        typeof (res as any)?.json === "function"
+          ? await (res as any).json()
+          : res;
+      return data;
     },
-    onSuccess: () => {
+
+    onMutate: async (clientData: NewClient) => {
+      // stop any running refetches so we can apply optimistic update safely
+      await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
+
+      // snapshot previous value so we can roll back if needed
+      const previous = queryClient.getQueryData<ClientWithReturns[]>([
+        "/api/clients",
+      ]);
+
+      // temp id for optimistic client
+      const tempId = `temp-${Date.now()}`;
+
+      // compute optimistic returns only for months that are BEFORE the current month
+      const currentMonthStr = `${new Date().getFullYear()}-${String(
+        new Date().getMonth() + 1
+      ).padStart(2, "0")}`;
+
+      // find index of currentMonthStr inside `months` array
+      const currentIndex = months.indexOf(currentMonthStr);
+
+      // DEBUG: show what option was chosen and the currentIndex
+      console.log(
+        "onMutate - previousReturns:",
+        clientData.previousReturns,
+        "currentIndex:",
+        currentIndex,
+        "months:",
+        months
+      );
+
+      let optimisticReturns: GstReturn[] = [];
+
+      if (clientData.previousReturns === "mark_all_previous") {
+        // if currentIndex is -1 (not found), we treat everything as previous
+        const markUntilIndex =
+          currentIndex === -1 ? months.length : currentIndex;
+
+        // months with index < markUntilIndex are considered previous
+        optimisticReturns = months
+          .map((m, idx) => ({ m, idx }))
+          .filter(({ idx }) => idx < markUntilIndex)
+          .map(
+            ({ m }) =>
+              ({
+                id: `temp-ret-${tempId}-${m}`,
+                month: m,
+                gstr1: "Filed",
+                gstr3b: "Filed",
+              } as unknown as GstReturn)
+          );
+      }
+
+      const optimisticClient: ClientWithReturns = {
+        id: tempId,
+        name: clientData.name,
+        gstin: clientData.gstin,
+        assignedToId: clientData.assignedToId || "",
+        returns: optimisticReturns,
+        gstUsername: clientData.gstUsername,
+        gstPassword: clientData.gstPassword,
+        remarks: clientData.remarks,
+      } as unknown as ClientWithReturns;
+
+      // put optimistic client at top of clients list
+      queryClient.setQueryData<ClientWithReturns[] | undefined>(
+        ["/api/clients"],
+        (old) => (old ? [optimisticClient, ...old] : [optimisticClient])
+      );
+
+      return { previous, tempId };
+    },
+
+    onError: (error: any, newClientArg, context: any) => {
+      queryClient.setQueryData(["/api/clients"], context?.previous);
+      toast({
+        title: "Failed to add client",
+        description:
+          error?.message || "Something went wrong while adding client.",
+        variant: "destructive",
+      });
+    },
+
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+    },
+
+    onSuccess: () => {
       setIsAddClientOpen(false);
-      setNewClient({ name: "", gstin: "", assignedToId: "" });
+      setNewClient({
+        name: "",
+        gstin: "",
+        assignedToId: "",
+        gstUsername: "",
+        gstPassword: "",
+        remarks: "",
+        previousReturns: "none",
+      });
+      setStaffSearchQuery("");
       toast({
         title: "Client added",
         description: "New client has been added successfully.",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
       });
     },
   });
@@ -240,13 +345,19 @@ export default function ClientList() {
       });
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] }),
   });
 
   const isAdmin = user?.role === "admin";
-  const months = getFinancialYearMonths();
+
+  const months = useMemo(() => getFinancialYearMonths(), []);
+
+  const validateGSTIN = (gstin: string): boolean => {
+    const gstinRegex =
+      /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+    return gstinRegex.test(gstin.toUpperCase());
+  };
 
   const filteredClients = (clients || []).filter((client) => {
     const matchesSearch =
@@ -275,7 +386,6 @@ export default function ClientList() {
     }
 
     const currentStatus = currentReturn[type];
-
     let nextStatus: GSTStatus = "Pending";
     if (currentStatus === "Pending") nextStatus = "Filed";
     else if (currentStatus === "Filed") nextStatus = "Late";
@@ -283,14 +393,8 @@ export default function ClientList() {
 
     updateReturnMutation.mutate({
       returnId: currentReturn.id,
-      update: { [type]: nextStatus },
+      update: { [type]: nextStatus } as UpdateGstReturn,
     });
-  };
-
-  const validateGSTIN = (gstin: string): boolean => {
-    const gstinRegex =
-      /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-    return gstinRegex.test(gstin.toUpperCase());
   };
 
   if (isLoading) {
@@ -322,6 +426,7 @@ export default function ClientList() {
             FY 2024-25 • {pendingCount} returns pending this month
           </p>
         </div>
+
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
           <div className="relative flex-1 sm:w-64">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -333,6 +438,7 @@ export default function ClientList() {
               data-testid="input-search-clients"
             />
           </div>
+
           <Select
             value={statusFilter}
             onValueChange={(v: any) => setStatusFilter(v)}
@@ -360,17 +466,18 @@ export default function ClientList() {
                   Add Client
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-[500px]">
+
+              <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle>Add New Client</DialogTitle>
                   <DialogDescription>
-                    Enter the client details. GSTIN must be valid 15-character
-                    format.
+                    Enter the client details including GST portal credentials.
                   </DialogDescription>
                 </DialogHeader>
+
                 <div className="grid gap-4 py-4">
                   <div className="grid gap-2">
-                    <Label htmlFor="client-name">Business Name</Label>
+                    <Label htmlFor="client-name">Business Name *</Label>
                     <Input
                       id="client-name"
                       placeholder="e.g., Sharma Enterprises Pvt Ltd"
@@ -381,8 +488,9 @@ export default function ClientList() {
                       data-testid="input-client-name"
                     />
                   </div>
+
                   <div className="grid gap-2">
-                    <Label htmlFor="client-gstin">GSTIN</Label>
+                    <Label htmlFor="client-gstin">GSTIN *</Label>
                     <Input
                       id="client-gstin"
                       placeholder="e.g., 27AABCS1429B1ZK"
@@ -416,8 +524,105 @@ export default function ClientList() {
                       </div>
                     )}
                   </div>
+
                   <div className="grid gap-2">
-                    <Label>Assign to Staff</Label>
+                    <Label htmlFor="gst-username">GST Portal Username</Label>
+                    <Input
+                      id="gst-username"
+                      placeholder="e.g., username@gst.gov.in"
+                      value={newClient.gstUsername || ""}
+                      onChange={(e) =>
+                        setNewClient({
+                          ...newClient,
+                          gstUsername: e.target.value,
+                        })
+                      }
+                      data-testid="input-gst-username"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Usually in format: username@domain or mobile number
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="gst-password">GST Portal Password</Label>
+                    <div className="relative">
+                      <Input
+                        id="gst-password"
+                        type={showPassword ? "text" : "password"}
+                        placeholder="Enter GST portal password"
+                        value={newClient.gstPassword || ""}
+                        onChange={(e) =>
+                          setNewClient({
+                            ...newClient,
+                            gstPassword: e.target.value,
+                          })
+                        }
+                        className="pr-10"
+                        data-testid="input-gst-password"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+                        onClick={() => setShowPassword(!showPassword)}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Store client's GST portal password securely
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="client-remarks">Remarks</Label>
+                    <Textarea
+                      id="client-remarks"
+                      placeholder="Any special notes about this client..."
+                      value={newClient.remarks || ""}
+                      onChange={(e) =>
+                        setNewClient({ ...newClient, remarks: e.target.value })
+                      }
+                      rows={3}
+                      data-testid="input-client-remarks"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="previous-returns">
+                      All previous returns are filed
+                    </Label>
+                    <Select
+                      value={newClient.previousReturns || "none"}
+                      onValueChange={(v: any) =>
+                        setNewClient({ ...newClient, previousReturns: v })
+                      }
+                    >
+                      <SelectTrigger id="previous-returns" className="w-full">
+                        <SelectValue placeholder="Choose an option" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">
+                          No — keep previous returns as Pending
+                        </SelectItem>
+                        <SelectItem value="mark_all_previous">
+                          Yes — mark all previous returns as Filed
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      If you choose Yes, all earlier months in the table will be
+                      marked as Filed for this client.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>Assign to Staff *</Label>
                     <Popover
                       open={staffSearchOpen}
                       onOpenChange={setStaffSearchOpen}
@@ -437,6 +642,7 @@ export default function ClientList() {
                           <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                         </Button>
                       </PopoverTrigger>
+
                       <PopoverContent className="w-full p-0" align="start">
                         <div className="flex items-center border-b px-3">
                           <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
@@ -449,6 +655,7 @@ export default function ClientList() {
                             className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                           />
                         </div>
+
                         <div className="max-h-60 overflow-y-auto p-1">
                           {staff
                             ?.filter(
@@ -486,25 +693,32 @@ export default function ClientList() {
                                 )}
                               </div>
                             ))}
-                          {staff?.filter(
-                            (s) =>
-                              s.name
-                                ?.toLowerCase()
-                                .includes(staffSearchQuery.toLowerCase()) ||
-                              s.email
-                                ?.toLowerCase()
-                                .includes(staffSearchQuery.toLowerCase())
-                          ).length === 0 && (
-                            <div className="py-6 text-center text-sm text-muted-foreground">
-                              No staff found
-                            </div>
-                          )}
                         </div>
                       </PopoverContent>
                     </Popover>
                   </div>
                 </div>
+
                 <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setIsAddClientOpen(false);
+                      setNewClient({
+                        name: "",
+                        gstin: "",
+                        assignedToId: "",
+                        gstUsername: "",
+                        gstPassword: "",
+                        remarks: "",
+                      });
+                      setShowPassword(false);
+                      setStaffSearchQuery("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+
                   <Button
                     onClick={() => addClientMutation.mutate(newClient)}
                     disabled={
@@ -524,6 +738,7 @@ export default function ClientList() {
               </DialogContent>
             </Dialog>
           )}
+
           <Card className="border shadow-sm">
             <CardContent className="p-0 overflow-x-auto">
               <Table>
@@ -564,6 +779,7 @@ export default function ClientList() {
                     })}
                   </TableRow>
                 </TableHeader>
+
                 <TableBody>
                   {filteredClients.map((client) => (
                     <TableRow
@@ -598,6 +814,7 @@ export default function ClientList() {
                                 )?.name || "Unassigned"}
                               </Button>
                             </PopoverTrigger>
+
                             <PopoverContent
                               className="w-[200px] p-0"
                               align="start"
@@ -666,7 +883,11 @@ export default function ClientList() {
                                   R1
                                 </span>
                                 <StatusBadge
-                                  status={gstr1Overdue ? "Late" : gstr1Status}
+                                  status={
+                                    gstr1Overdue
+                                      ? "Late"
+                                      : (gstr1Status as GSTStatus)
+                                  }
                                   canEdit={true}
                                   onClick={() =>
                                     handleStatusChange(client, month, "gstr1")
@@ -674,6 +895,7 @@ export default function ClientList() {
                                   dueDate={getDueDate(month, "gstr1")}
                                 />
                               </div>
+
                               <div className="flex items-center gap-2 w-full justify-between px-1">
                                 <span
                                   className={`text-[10px] font-semibold uppercase tracking-wider w-6 text-left ${
@@ -685,7 +907,11 @@ export default function ClientList() {
                                   3B
                                 </span>
                                 <StatusBadge
-                                  status={gstr3bOverdue ? "Late" : gstr3bStatus}
+                                  status={
+                                    gstr3bOverdue
+                                      ? "Late"
+                                      : (gstr3bStatus as GSTStatus)
+                                  }
                                   canEdit={true}
                                   onClick={() =>
                                     handleStatusChange(client, month, "gstr3b")
@@ -699,6 +925,7 @@ export default function ClientList() {
                       })}
                     </TableRow>
                   ))}
+
                   {filteredClients.length === 0 && (
                     <TableRow>
                       <TableCell

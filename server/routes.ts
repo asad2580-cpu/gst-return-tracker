@@ -77,54 +77,55 @@ export async function registerRoutes(
 
   // Create a new client (admin only)
   app.post("/api/clients", requireAdmin, async (req, res, next) => {
-    try {
-      const { name, gstin, assignedToId } = req.body;
-      
-      // Validate inputs
-      if (!name || !gstin || !assignedToId) {
-        return res.status(400).send("Missing required fields: name, gstin, or assignedToId");
-      }
-
-      // Validate GSTIN format (15 characters)
-      const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-      if (!gstinRegex.test(gstin.toUpperCase())) {
-        return res.status(400).send("Invalid GSTIN format");
-      }
-
-      // Check if GSTIN already exists
-      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ?").get(gstin);
-      if (existingClient) {
-        return res.status(400).send("A client with this GSTIN already exists");
-      }
-
-      // Insert new client
-      const result = db.prepare(
-        "INSERT INTO clients (name, gstin, assignedToId) VALUES (?, ?, ?)"
-      ).run(name, gstin, assignedToId);
-
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.lastInsertRowid);
-
-      // Create returns for last 3 months
-      const currentDate = new Date();
-      const months = [];
-      for (let i = 0; i < 3; i++) {
-        const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-        months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-      }
-
-      for (const month of months) {
-        db.prepare(
-          "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
-        ).run(client.id, month);
-      }
-
-      const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
-      res.status(201).json({ ...client, returns });
-    } catch (error) {
-      console.error("Error creating client:", error);
-      next(error);
+  try {
+    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks } = req.body;
+    
+    // Validate required inputs
+    if (!name || !gstin || !assignedToId) {
+      return res.status(400).send("Missing required fields: name, gstin, or assignedToId");
     }
-  });
+
+    // Validate GSTIN format
+    const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+    if (!gstinRegex.test(gstin.toUpperCase())) {
+      return res.status(400).send("Invalid GSTIN format");
+    }
+
+    // Check if GSTIN already exists
+    const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ?").get(gstin);
+    if (existingClient) {
+      return res.status(400).send("A client with this GSTIN already exists");
+    }
+
+    // Insert new client with all fields
+    const result = db.prepare(
+      `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+
+    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.lastInsertRowid);
+
+    // Create returns for last 3 months
+    const currentDate = new Date();
+    const months = [];
+    for (let i = 0; i < 3; i++) {
+      const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+      months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+    }
+
+    for (const month of months) {
+      db.prepare(
+        "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
+      ).run(client.id, month);
+    }
+
+    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
+    res.status(201).json({ ...client, returns });
+  } catch (error) {
+    console.error("Error creating client:", error);
+    next(error);
+  }
+});
 
   // Reassign client to different staff (admin only)
   app.patch("/api/clients/:id/assign", requireAdmin, async (req: any, res: any, next: any) => {
