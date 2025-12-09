@@ -76,9 +76,10 @@ export async function registerRoutes(
   });
 
   // Create a new client (admin only)
-  app.post("/api/clients", requireAdmin, async (req, res, next) => {
+  // Create a new client (admin only)
+app.post("/api/clients", requireAdmin, async (req, res, next) => {
   try {
-    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks } = req.body;
+    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks, previousReturns } = req.body;
     
     // Validate required inputs
     if (!name || !gstin || !assignedToId) {
@@ -106,18 +107,27 @@ export async function registerRoutes(
     const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.lastInsertRowid);
 
     // Create returns for last 3 months
-    const currentDate = new Date();
-    const months = [];
-    for (let i = 0; i < 3; i++) {
-      const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-      months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-    }
+      // Create returns for last 3 months
+const currentDate = new Date();
+// Current return period is the previous month (GST returns are filed for previous month)
+const returnPeriodDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+const currentReturnPeriod = `${returnPeriodDate.getFullYear()}-${String(returnPeriodDate.getMonth() + 1).padStart(2, '0')}`;
+const months = [];
+for (let i = 0; i < 3; i++) {
+  const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+  months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+}
 
-    for (const month of months) {
-      db.prepare(
-        "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
-      ).run(client.id, month);
-    }
+for (const month of months) {
+  // Determine status: if previousReturns is "mark_all_previous" and month is before current return period, mark as Filed
+  let status = 'Pending';
+  if (previousReturns === 'mark_all_previous' && month < currentReturnPeriod) {
+    status = 'Filed';
+  }
+  db.prepare(
+    "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, ?, ?)"
+  ).run(client.id, month, status, status);
+}
 
     const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
     res.status(201).json({ ...client, returns });
