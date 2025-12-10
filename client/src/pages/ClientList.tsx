@@ -183,8 +183,7 @@ export default function ClientList() {
       returnId: string;
       update: UpdateGstReturn;
     }) => {
-      const res = await apiRequest("PATCH", `/api/returns/${returnId}`, update);
-      return res.json();
+      return await apiRequest("PATCH", `/api/returns/${returnId}`, update);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
@@ -193,8 +192,14 @@ export default function ClientList() {
         description: "Return status has been updated successfully.",
       });
     },
+    onError: (error: Error) => {
+      toast({
+        title: "Cannot update status",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
   });
-
   const assignClientMutation = useMutation({
     mutationFn: async ({
       clientId,
