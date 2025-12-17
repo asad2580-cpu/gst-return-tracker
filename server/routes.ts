@@ -145,6 +145,56 @@ for (const month of months) {
   }
 });
 
+// Update client details (admin only)
+app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any) => {
+  try {
+    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks } = req.body;
+    
+    // Check if client exists
+    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
+    if (!client) {
+      return res.status(404).json("Client not found");
+    }
+
+    // If GSTIN is being changed, validate it
+    if (gstin && gstin !== client.gstin) {
+      const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+      if (!gstinRegex.test(gstin.toUpperCase())) {
+        return res.status(400).json("Invalid GSTIN format");
+      }
+
+      // Check if new GSTIN already exists
+      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ? AND id != ?").get(gstin, req.params.id);
+      if (existingClient) {
+        return res.status(400).json("A client with this GSTIN already exists");
+      }
+    }
+
+    // Update client
+    db.prepare(
+      `UPDATE clients 
+       SET name = ?, gstin = ?, assignedToId = ?, gstUsername = ?, gstPassword = ?, remarks = ?
+       WHERE id = ?`
+    ).run(
+      name || client.name,
+      gstin || client.gstin,
+      assignedToId !== undefined ? assignedToId : client.assignedToId,
+      gstUsername !== undefined ? gstUsername : client.gstUsername,
+      gstPassword !== undefined ? gstPassword : client.gstPassword,
+      remarks !== undefined ? remarks : client.remarks,
+      req.params.id
+    );
+
+    const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
+    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(req.params.id);
+    
+    res.json({ ...updatedClient, returns });
+  } catch (error) {
+    console.error("Error updating client:", error);
+    next(error);
+  }
+});
+
   // Reassign client to different staff (admin only)
   app.patch("/api/clients/:id/assign", requireAdmin, async (req: any, res: any, next: any) => {
     try {

@@ -154,6 +154,13 @@ export default function ClientList() {
     gstPassword: "",
     remarks: "",
   });
+  
+  // Edit client states
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState<ClientWithReturns | null>(null);
+  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [editStaffSearchOpen, setEditStaffSearchOpen] = useState(false);
+  const [editStaffSearchQuery, setEditStaffSearchQuery] = useState("");
 
   const togglePasswordVisibility = (clientId: string) => {
     setShowPasswords(prev => ({
@@ -217,6 +224,38 @@ export default function ClientList() {
       });
     },
   });
+
+  const editClientMutation = useMutation({
+    mutationFn: async (clientData: ClientWithReturns) => {
+      const res = await apiRequest("PATCH", `/api/clients/${clientData.id}`, {
+        name: clientData.name,
+        gstin: clientData.gstin,
+        assignedToId: clientData.assignedToId,
+        gstUsername: clientData.gstUsername,
+        gstPassword: clientData.gstPassword,
+        remarks: clientData.remarks,
+      });
+      return res;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      setIsEditDialogOpen(false);
+      setEditingClient(null);
+      toast({
+        title: "Client updated",
+        description: "Client details have been updated successfully.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to update client",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  
 
   const addClientMutation = useMutation({
     mutationFn: async (clientData: NewClient) => {
@@ -731,6 +770,229 @@ export default function ClientList() {
             </Dialog>
           )}
 
+          {/* Edit Client Dialog */}
+          {isAdmin && editingClient && (
+            <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+              <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Edit Client</DialogTitle>
+                  <DialogDescription>
+                    Update client details and GST portal credentials.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-client-name">Business Name *</Label>
+                    <Input
+                      id="edit-client-name"
+                      value={editingClient.name}
+                      onChange={(e) =>
+                        setEditingClient({ ...editingClient, name: e.target.value })
+                      }
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-client-gstin">GSTIN *</Label>
+                    <Input
+                      id="edit-client-gstin"
+                      value={editingClient.gstin}
+                      onChange={(e) =>
+                        setEditingClient({
+                          ...editingClient,
+                          gstin: e.target.value.toUpperCase(),
+                        })
+                      }
+                      maxLength={15}
+                      className="font-mono"
+                    />
+                    {editingClient.gstin.length > 0 && (
+                      <div
+                        className={`flex items-center gap-1 text-xs ${
+                          validateGSTIN(editingClient.gstin)
+                            ? "text-green-600"
+                            : "text-red-500"
+                        }`}
+                      >
+                        {validateGSTIN(editingClient.gstin) ? (
+                          <CheckCircle className="h-3 w-3" />
+                        ) : (
+                          <AlertCircle className="h-3 w-3" />
+                        )}
+                        {validateGSTIN(editingClient.gstin)
+                          ? "Valid GSTIN format"
+                          : "Invalid GSTIN format"}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-gst-username">GST Portal Username</Label>
+                    <Input
+                      id="edit-gst-username"
+                      value={editingClient.gstUsername || ""}
+                      onChange={(e) =>
+                        setEditingClient({
+                          ...editingClient,
+                          gstUsername: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-gst-password">GST Portal Password</Label>
+                    <div className="relative">
+                      <Input
+                        id="edit-gst-password"
+                        type={showEditPassword ? "text" : "password"}
+                        value={editingClient.gstPassword || ""}
+                        onChange={(e) =>
+                          setEditingClient({
+                            ...editingClient,
+                            gstPassword: e.target.value,
+                          })
+                        }
+                        className="pr-10"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+                        onClick={() => setShowEditPassword(!showEditPassword)}
+                      >
+                        {showEditPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-client-remarks">Remarks</Label>
+                    <Textarea
+                      id="edit-client-remarks"
+                      value={editingClient.remarks || ""}
+                      onChange={(e) =>
+                        setEditingClient({ ...editingClient, remarks: e.target.value })
+                      }
+                      rows={3}
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>Assign to Staff *</Label>
+                    <Popover
+                      open={editStaffSearchOpen}
+                      onOpenChange={setEditStaffSearchOpen}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          className="justify-between w-full"
+                        >
+                          {editingClient.assignedToId
+                            ? staff?.find(
+                                (s) => s.id === editingClient.assignedToId
+                              )?.name
+                            : "Select staff member..."}
+                          <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+
+                      <PopoverContent className="w-full p-0" align="start">
+                        <div className="flex items-center border-b px-3">
+                          <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+                          <Input
+                            placeholder="Search staff..."
+                            value={editStaffSearchQuery}
+                            onChange={(e) =>
+                              setEditStaffSearchQuery(e.target.value)
+                            }
+                            className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                          />
+                        </div>
+
+                        <div className="max-h-60 overflow-y-auto p-1">
+                          {staff
+                            ?.filter(
+                              (s) =>
+                                s.name
+                                  ?.toLowerCase()
+                                  .includes(editStaffSearchQuery.toLowerCase()) ||
+                                s.email
+                                  ?.toLowerCase()
+                                  .includes(editStaffSearchQuery.toLowerCase())
+                            )
+                            .map((staffMember) => (
+                              <div
+                                key={staffMember.id}
+                                className="relative flex cursor-pointer select-none items-center rounded-sm px-2 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+                                onClick={() => {
+                                  setEditingClient({
+                                    ...editingClient,
+                                    assignedToId: staffMember.id,
+                                  });
+                                  setEditStaffSearchOpen(false);
+                                  setEditStaffSearchQuery("");
+                                }}
+                              >
+                                <div className="flex flex-col">
+                                  <span className="font-medium">
+                                    {staffMember.name}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {staffMember.email}
+                                  </span>
+                                </div>
+                                {editingClient.assignedToId === staffMember.id && (
+                                  <CheckCircle className="ml-auto h-4 w-4 text-primary" />
+                                )}
+                              </div>
+                            ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setIsEditDialogOpen(false);
+                      setEditingClient(null);
+                      setShowEditPassword(false);
+                      setEditStaffSearchQuery("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+
+                  <Button
+                    onClick={() => editClientMutation.mutate(editingClient)}
+                    disabled={
+                      !editingClient.name ||
+                      !validateGSTIN(editingClient.gstin) ||
+                      !editingClient.assignedToId ||
+                      editClientMutation.isPending
+                    }
+                  >
+                    {editClientMutation.isPending && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    Save Changes
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          )}
+
           <Card className="border shadow-sm">
             <CardContent className="p-0 overflow-x-auto">
               <Table>
@@ -780,56 +1042,76 @@ export default function ClientList() {
                       data-testid={`row-client-${client.id}`}
                     >
                       <TableCell className="font-medium sticky left-0 bg-card group-hover:bg-muted/30">
-                        <div className="flex flex-col gap-2">
-                          <div className="flex flex-col">
-                            <span className="text-sm text-foreground font-medium">
-                              {client.name}
-                            </span>
-                            <span className="text-xs text-muted-foreground font-mono tracking-wide">
-                              {client.gstin}
-                            </span>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex flex-col gap-2 flex-1">
+                            <div className="flex flex-col">
+                              <span className="text-sm text-foreground font-medium">
+                                {client.name}
+                              </span>
+                              <span className="text-xs text-muted-foreground font-mono tracking-wide">
+                                {client.gstin}
+                              </span>
+                            </div>
+                            
+                            {(client.gstUsername || client.gstPassword) && (
+                              <div className="flex flex-col gap-1 pt-1 border-t border-border/50">
+                                {client.gstUsername && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-muted-foreground uppercase font-semibold w-12">User:</span>
+                                    <span className="text-xs text-foreground font-mono">{client.gstUsername}</span>
+                                  </div>
+                                )}
+                                {client.gstPassword && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-muted-foreground uppercase font-semibold w-12">Pass:</span>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-foreground font-mono">
+                                        {showPasswords[client.id] ? client.gstPassword : '••••••••'}
+                                      </span>
+                                      <button
+                                        onClick={() => togglePasswordVisibility(client.id)}
+                                        className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
+                                      >
+                                        {showPasswords[client.id] ? (
+                                          <EyeOff className="h-3 w-3" />
+                                        ) : (
+                                          <Eye className="h-3 w-3" />
+                                        )}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                           
-                          {(client.gstUsername || client.gstPassword) && (
-                            <div className="flex flex-col gap-1 pt-1 border-t border-border/50">
-                              {client.gstUsername && (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-muted-foreground uppercase font-semibold w-12">User:</span>
-                                  <span className="text-xs text-foreground font-mono">{client.gstUsername}</span>
-                                </div>
-                              )}
-                              {client.gstPassword && (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-muted-foreground uppercase font-semibold w-12">Pass:</span>
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-xs text-foreground font-mono">
-                                      {showPasswords[client.id] ? client.gstPassword : '••••••••'}
-                                    </span>
-                                    <button
-                                      onClick={() => togglePasswordVisibility(client.id)}
-                                      className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
-                                    >
-                                      {showPasswords[client.id] ? (
-                                        <EyeOff className="h-3 w-3" />
-                                      ) : (
-                                        <Eye className="h-3 w-3" />
-                                      )}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
+                          {isAdmin && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => {
+                                setEditingClient(client);
+                                setIsEditDialogOpen(true);
+                              }}
+                            >
+                              <UserCog className="h-3.5 w-3.5" />
+                            </Button>
                           )}
                         </div>
                       </TableCell>
                                             {isAdmin && (
                         <TableCell>
-                          {staff?.find((s) => s.id === client.assignedToId)?.name || "—"}
+                          {staff?.find(
+                            (s) => s.id === client.assignedToId
+                          )?.name || "—"}
                         </TableCell>
                       )}
 
                       {months.map((month) => {
-                        const ret = client.returns.find((r) => r.month === month);
+                        const ret = client.returns.find(
+                          (r) => r.month === month
+                        );
 
                         return (
                           <TableCell
@@ -840,22 +1122,35 @@ export default function ClientList() {
                               <StatusBadge
                                 status={
                                   ret?.gstr1 ??
-                                  (isOverdue(month, "gstr1") ? "Late" : "Pending")
+                                  (isOverdue(month, "gstr1")
+                                    ? "Late"
+                                    : "Pending")
                                 }
                                 canEdit={isAdmin}
                                 onClick={() =>
-                                  handleStatusChange(client, month, "gstr1")
+                                  handleStatusChange(
+                                    client,
+                                    month,
+                                    "gstr1"
+                                  )
                                 }
                                 dueDate={getDueDate(month, "gstr1")}
                               />
+
                               <StatusBadge
                                 status={
                                   ret?.gstr3b ??
-                                  (isOverdue(month, "gstr3b") ? "Late" : "Pending")
+                                  (isOverdue(month, "gstr3b")
+                                    ? "Late"
+                                    : "Pending")
                                 }
                                 canEdit={isAdmin}
                                 onClick={() =>
-                                  handleStatusChange(client, month, "gstr3b")
+                                  handleStatusChange(
+                                    client,
+                                    month,
+                                    "gstr3b"
+                                  )
                                 }
                                 dueDate={getDueDate(month, "gstr3b")}
                               />
@@ -874,8 +1169,3 @@ export default function ClientList() {
     </div>
   );
 }
-
-                      
-                      
-                                
-            
