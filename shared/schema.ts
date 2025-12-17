@@ -18,10 +18,13 @@ export const users = pgTable("users", {
 });
 
 export const clients = pgTable("clients", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: varchar("name", { length: 255 }).notNull(),
-  gstin: varchar("gstin", { length: 15 }).notNull().unique(),
-  assignedToId: varchar("assigned_to_id").references(() => users.id),
+  id: text("id").primaryKey().notNull().$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  gstin: text("gstin").notNull().unique(),
+  assignedToId: text("assigned_to_id").references(() => users.id, { onDelete: "set null" }),
+  gstUsername: text("gst_username"),
+  gstPassword: text("gst_password"),
+  remarks: text("remarks"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

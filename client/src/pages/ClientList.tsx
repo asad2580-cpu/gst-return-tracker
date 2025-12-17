@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -34,16 +34,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Search,
-  Filter,
-  UserCog,
-  Loader2,
-  Plus,
-  Calendar,
-  AlertCircle,
-  CheckCircle,
-} from "lucide-react";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -62,8 +52,6 @@ type NewClient = {
   gstUsername?: string;
   gstPassword?: string;
   remarks?: string;
-  // new: how to treat previous returns when creating the client
-  // values: "none" (default) or "mark_all_previous" (mark previous returns as Filed)
   previousReturns?: "none" | "mark_all_previous";
 };
 
@@ -157,6 +145,7 @@ export default function ClientList() {
   const [staffSearchOpen, setStaffSearchOpen] = useState(false);
   const [staffSearchQuery, setStaffSearchQuery] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
   const [newClient, setNewClient] = useState<NewClient>({
     name: "",
     gstin: "",
@@ -165,6 +154,13 @@ export default function ClientList() {
     gstPassword: "",
     remarks: "",
   });
+
+  const togglePasswordVisibility = (clientId: string) => {
+    setShowPasswords(prev => ({
+      ...prev,
+      [clientId]: !prev[clientId]
+    }));
+  };
 
   const { data: clients, isLoading } = useQuery<ClientWithReturns[]>({
     queryKey: ["/api/clients"],
@@ -233,26 +229,20 @@ export default function ClientList() {
     },
 
     onMutate: async (clientData: NewClient) => {
-      // stop any running refetches so we can apply optimistic update safely
       await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
 
-      // snapshot previous value so we can roll back if needed
       const previous = queryClient.getQueryData<ClientWithReturns[]>([
         "/api/clients",
       ]);
 
-      // temp id for optimistic client
       const tempId = `temp-${Date.now()}`;
 
-      // compute optimistic returns only for months that are BEFORE the current month
       const currentMonthStr = `${new Date().getFullYear()}-${String(
         new Date().getMonth() + 1
       ).padStart(2, "0")}`;
 
-      // find index of currentMonthStr inside `months` array
       const currentIndex = months.indexOf(currentMonthStr);
 
-      // DEBUG: show what option was chosen and the currentIndex
       console.log(
         "onMutate - previousReturns:",
         clientData.previousReturns,
@@ -265,11 +255,9 @@ export default function ClientList() {
       let optimisticReturns: GstReturn[] = [];
 
       if (clientData.previousReturns === "mark_all_previous") {
-        // if currentIndex is -1 (not found), we treat everything as previous
         const markUntilIndex =
           currentIndex === -1 ? months.length : currentIndex;
 
-        // months with index < markUntilIndex are considered previous
         optimisticReturns = months
           .map((m, idx) => ({ m, idx }))
           .filter(({ idx }) => idx < markUntilIndex)
@@ -295,7 +283,6 @@ export default function ClientList() {
         remarks: clientData.remarks,
       } as unknown as ClientWithReturns;
 
-      // put optimistic client at top of clients list
       queryClient.setQueryData<ClientWithReturns[] | undefined>(
         ["/api/clients"],
         (old) => (old ? [optimisticClient, ...old] : [optimisticClient])
@@ -793,198 +780,102 @@ export default function ClientList() {
                       data-testid={`row-client-${client.id}`}
                     >
                       <TableCell className="font-medium sticky left-0 bg-card group-hover:bg-muted/30">
-                        <div className="flex flex-col">
-                          <span className="text-sm text-foreground font-medium">
-                            {client.name}
-                          </span>
-                          <span className="text-xs text-muted-foreground font-mono tracking-wide">
-                            {client.gstin}
-                          </span>
+                        <div className="flex flex-col gap-2">
+                          <div className="flex flex-col">
+                            <span className="text-sm text-foreground font-medium">
+                              {client.name}
+                            </span>
+                            <span className="text-xs text-muted-foreground font-mono tracking-wide">
+                              {client.gstin}
+                            </span>
+                          </div>
+                          
+                          {(client.gstUsername || client.gstPassword) && (
+                            <div className="flex flex-col gap-1 pt-1 border-t border-border/50">
+                              {client.gstUsername && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-muted-foreground uppercase font-semibold w-12">User:</span>
+                                  <span className="text-xs text-foreground font-mono">{client.gstUsername}</span>
+                                </div>
+                              )}
+                              {client.gstPassword && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-muted-foreground uppercase font-semibold w-12">Pass:</span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs text-foreground font-mono">
+                                      {showPasswords[client.id] ? client.gstPassword : '••••••••'}
+                                    </span>
+                                    <button
+                                      onClick={() => togglePasswordVisibility(client.id)}
+                                      className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
+                                    >
+                                      {showPasswords[client.id] ? (
+                                        <EyeOff className="h-3 w-3" />
+                                      ) : (
+                                        <Eye className="h-3 w-3" />
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </TableCell>
-
-                      {isAdmin && (
+                                            {isAdmin && (
                         <TableCell>
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 px-2 text-xs font-normal"
-                                data-testid={`button-assign-${client.id}`}
-                              >
-                                <UserCog className="mr-2 h-3 w-3" />
-                                {staff?.find(
-                                  (u) => u.id === client.assignedToId
-                                )?.name || "Unassigned"}
-                              </Button>
-                            </PopoverTrigger>
-
-                            <PopoverContent
-                              className="w-[200px] p-0"
-                              align="start"
-                            >
-                              <div className="p-2">
-                                <p className="text-xs font-medium text-muted-foreground mb-2 px-2">
-                                  Assign to Staff
-                                </p>
-                                {staff?.map((staffMember) => (
-                                  <div
-                                    key={staffMember.id}
-                                    className="flex items-center px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm cursor-pointer"
-                                    onClick={() =>
-                                      assignClientMutation.mutate({
-                                        clientId: client.id,
-                                        staffId: staffMember.id,
-                                      })
-                                    }
-                                    data-testid={`option-assign-${staffMember.id}`}
-                                  >
-                                    {staffMember.name}
-                                  </div>
-                                ))}
-                              </div>
-                            </PopoverContent>
-                          </Popover>
+                          {staff?.find((s) => s.id === client.assignedToId)?.name || "—"}
                         </TableCell>
                       )}
 
                       {months.map((month) => {
-                        const returnData = client.returns.find(
-                          (r) => r.month === month
-                        );
-                        const isCurrentMonth =
-                          month ===
-                          `${new Date().getFullYear()}-${String(
-                            new Date().getMonth() + 1
-                          ).padStart(2, "0")}`;
-
-                        const gstr1Status = returnData?.gstr1 || "Pending";
-                        const gstr3bStatus = returnData?.gstr3b || "Pending";
-
-                        const gstr1Overdue =
-                          gstr1Status === "Pending" &&
-                          isOverdue(month, "gstr1");
-                        const gstr3bOverdue =
-                          gstr3bStatus === "Pending" &&
-                          isOverdue(month, "gstr3b");
+                        const ret = client.returns.find((r) => r.month === month);
 
                         return (
                           <TableCell
                             key={month}
-                            className={`text-center border-l border-border/50 ${
-                              isCurrentMonth ? "bg-primary/5" : ""
-                            }`}
+                            className="text-center border-l border-border/50"
                           >
-                            <div className="flex flex-col gap-2 items-center py-1">
-                              <div className="flex items-center gap-2 w-full justify-between px-1">
-                                <span
-                                  className={`text-[10px] font-semibold uppercase tracking-wider w-6 text-left ${
-                                    gstr1Overdue
-                                      ? "text-red-500"
-                                      : "text-muted-foreground"
-                                  }`}
-                                >
-                                  R1
-                                </span>
-                                <StatusBadge
-                                  status={
-                                    gstr1Overdue
-                                      ? "Late"
-                                      : (gstr1Status as GSTStatus)
-                                  }
-                                  canEdit={true}
-                                  onClick={() =>
-                                    handleStatusChange(client, month, "gstr1")
-                                  }
-                                  dueDate={getDueDate(month, "gstr1")}
-                                />
-                              </div>
-
-                              <div className="flex items-center gap-2 w-full justify-between px-1">
-                                <span
-                                  className={`text-[10px] font-semibold uppercase tracking-wider w-6 text-left ${
-                                    gstr3bOverdue
-                                      ? "text-red-500"
-                                      : "text-muted-foreground"
-                                  }`}
-                                >
-                                  3B
-                                </span>
-                                <StatusBadge
-                                  status={
-                                    gstr3bOverdue
-                                      ? "Late"
-                                      : (gstr3bStatus as GSTStatus)
-                                  }
-                                  canEdit={true}
-                                  onClick={() =>
-                                    handleStatusChange(client, month, "gstr3b")
-                                  }
-                                  dueDate={getDueDate(month, "gstr3b")}
-                                />
-                              </div>
+                            <div className="flex flex-col gap-1 items-center">
+                              <StatusBadge
+                                status={
+                                  ret?.gstr1 ??
+                                  (isOverdue(month, "gstr1") ? "Late" : "Pending")
+                                }
+                                canEdit={isAdmin}
+                                onClick={() =>
+                                  handleStatusChange(client, month, "gstr1")
+                                }
+                                dueDate={getDueDate(month, "gstr1")}
+                              />
+                              <StatusBadge
+                                status={
+                                  ret?.gstr3b ??
+                                  (isOverdue(month, "gstr3b") ? "Late" : "Pending")
+                                }
+                                canEdit={isAdmin}
+                                onClick={() =>
+                                  handleStatusChange(client, month, "gstr3b")
+                                }
+                                dueDate={getDueDate(month, "gstr3b")}
+                              />
                             </div>
                           </TableCell>
                         );
                       })}
                     </TableRow>
                   ))}
-
-                  {filteredClients.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={
-                          isAdmin ? months.length + 2 : months.length + 1
-                        }
-                        className="text-center py-12"
-                      >
-                        <div className="flex flex-col items-center gap-2">
-                          <Calendar className="h-8 w-8 text-muted-foreground/50" />
-                          <p className="text-sm text-muted-foreground">
-                            No clients found
-                          </p>
-                          {isAdmin && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setIsAddClientOpen(true)}
-                            >
-                              <Plus className="mr-2 h-4 w-4" />
-                              Add your first client
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
                 </TableBody>
               </Table>
             </CardContent>
           </Card>
-
-          <div className="flex items-center justify-between text-xs text-muted-foreground bg-muted/30 rounded-lg p-3">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-1.5">
-                <div className="h-2.5 w-2.5 rounded-full bg-green-500"></div>
-                <span>Filed</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="h-2.5 w-2.5 rounded-full bg-amber-500"></div>
-                <span>Pending</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="h-2.5 w-2.5 rounded-full bg-red-500"></div>
-                <span>Late/Overdue</span>
-              </div>
-            </div>
-            <div className="text-muted-foreground">
-              <span className="font-medium">Due Dates:</span> GSTR-1 on 11th,
-              GSTR-3B on 20th of next month
-            </div>
-          </div>
         </div>
       </div>
     </div>
   );
 }
+
+                      
+                      
+                                
+            
