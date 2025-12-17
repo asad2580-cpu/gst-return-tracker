@@ -122,7 +122,9 @@ export default function StaffClientList() {
   const [, setLocation] = useLocation();
   const [match, params] = useRoute("/staff/:staffId/clients");
   
-  const staffId = params?.staffId;
+  const staffId = params?.staffId ? String(params.staffId) : undefined;
+
+  
 
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<GSTStatus | "All">("All");
@@ -149,8 +151,8 @@ export default function StaffClientList() {
     enabled: user?.role === "admin",
   });
 
-  const currentStaff = staff?.find(s => s.id === staffId);
-  const staffClients = clients?.filter(c => c.assignedToId === staffId) || [];
+  const currentStaff = staff?.find(s => String(s.id) === staffId);
+  const staffClients = clients?.filter(c => String(c.assignedToId) === staffId) || [];
 
   const updateReturnMutation = useMutation({
     mutationFn: async ({
