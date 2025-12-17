@@ -145,6 +145,68 @@ for (const month of months) {
   }
 });
 
+// Bulk Create Clients (Admin only)
+app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
+  try {
+    const clients = req.body; // Expecting an array of client objects
+    if (!Array.isArray(clients)) {
+      return res.status(400).json("Data must be an array of clients");
+    }
+
+    // 1. Fetch all staff to map Email -> ID (assuming Excel uses email to identify staff)
+    const staffRows = db.prepare("SELECT id, email FROM users WHERE role = 'staff'").all() as {id: number, email: string}[];
+    const staffMap = new Map(staffRows.map(s => [s.email.toLowerCase(), s.id]));
+
+    // 2. Prepare the GSTIN regex (reusing your logic)
+    const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+
+    // 3. START TRANSACTION
+    const runTransaction = db.transaction((clientData) => {
+      const results = [];
+
+      for (const item of clientData) {
+        const { name, gstin, staffEmail, gstUsername, gstPassword, remarks } = item;
+
+        // Validation
+        const assignedToId = staffMap.get(staffEmail?.toLowerCase());
+        if (!assignedToId) throw new Error(`Staff email ${staffEmail} not found`);
+        if (!gstinRegex.test(gstin.toUpperCase())) throw new Error(`Invalid GSTIN: ${gstin}`);
+
+        // Insert Client
+        const result = db.prepare(
+          `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+
+        const clientId = result.lastInsertRowid;
+
+        // Generate 3 months of returns (Reusing your logic)
+        const currentDate = new Date();
+        for (let i = 0; i < 3; i++) {
+          const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+          const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          
+          db.prepare(
+            "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
+          ).run(clientId, month);
+        }
+        
+        results.push(clientId);
+      }
+      return results;
+    });
+
+    // 4. EXECUTE
+    const insertedIds = runTransaction(clients);
+
+    res.status(201).json({ message: `Successfully imported ${insertedIds.length} clients` });
+  } catch (error: any) {
+    console.error("Bulk import failed:", error);
+    // SQLite transactions automatically rollback if an error is thrown inside
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // Update client details (admin only)
 app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any) => {
   try {
