@@ -1,3 +1,6 @@
+import { ArrowRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   Card,
@@ -15,6 +18,7 @@ import { getQueryFn } from "@/lib/queryClient"; // make sure this path is correc
 type ClientWithReturns = Client & { returns: GstReturn[] };
 
 export default function StaffList() {
+  const [, setLocation] = useLocation();
   // fetch staff created by the logged-in admin (server enforces admin-only)
   const { data: staff, isLoading: staffLoading } = useQuery<User[]>({
     queryKey: ["/api/users"],
@@ -60,35 +64,44 @@ export default function StaffList() {
 
           return (
             <Card
-              key={staffMember.id}
-              className="hover:border-primary/50 transition-colors group"
-              data-testid={`card-staff-${staffMember.id}`}
-            >
-              <CardHeader className="flex flex-row items-center gap-4 pb-2">
-                <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-                  <AvatarFallback>{initial.toUpperCase()}</AvatarFallback>
-                </Avatar>
-                <div>
-                  <CardTitle className="text-lg">{displayName}</CardTitle>
-                  <CardDescription>{staffMember.email}</CardDescription>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="mt-4 flex items-center justify-between p-3 bg-muted/50 rounded-lg group-hover:bg-primary/5 transition-colors">
-                  <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground group-hover:text-primary">
-                    <Briefcase className="h-4 w-4" />
-                    Assigned Clients
-                  </div>
-                  <Badge
-                    variant="secondary"
-                    className="text-lg px-3 py-1"
-                    data-testid={`badge-count-${staffMember.id}`}
-                  >
-                    {getClientCount(staffMember.id)}
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
+  key={staffMember.id}
+  className="hover:border-primary/50 transition-colors group"
+  data-testid={`card-staff-${staffMember.id}`}
+>
+  <CardHeader className="flex flex-row items-center gap-4 pb-2">
+    <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
+      <AvatarFallback>{initial.toUpperCase()}</AvatarFallback>
+    </Avatar>
+    <div className="flex-1">
+      <CardTitle className="text-lg">{displayName}</CardTitle>
+      <CardDescription>{staffMember.email}</CardDescription>
+    </div>
+  </CardHeader>
+  <CardContent>
+    <div className="mt-4 flex items-center justify-between p-3 bg-muted/50 rounded-lg group-hover:bg-primary/5 transition-colors">
+      <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground group-hover:text-primary">
+        <Briefcase className="h-4 w-4" />
+        Assigned Clients
+      </div>
+      <Badge
+        variant="secondary"
+        className="text-lg px-3 py-1"
+        data-testid={`badge-count-${staffMember.id}`}
+      >
+        {getClientCount(staffMember.id)}
+      </Badge>
+    </div>
+    
+    <Button
+      variant="outline"
+      className="w-full mt-3"
+      onClick={() => setLocation(`/staff/${staffMember.id}/clients`)}
+    >
+      View Clients
+      <ArrowRight className="ml-2 h-4 w-4" />
+    </Button>
+  </CardContent>
+</Card>
           );
         })}
 
