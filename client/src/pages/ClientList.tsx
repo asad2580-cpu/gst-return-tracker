@@ -49,6 +49,7 @@ type NewClient = {
   name: string;
   gstin: string;
   assignedToId: string;
+  filingStartDate: string;
   gstUsername?: string;
   gstPassword?: string;
   remarks?: string;
@@ -150,6 +151,7 @@ export default function ClientList() {
     name: "",
     gstin: "",
     assignedToId: "",
+    filingStartDate: "",
     gstUsername: "",
     gstPassword: "",
     remarks: "",
@@ -267,68 +269,52 @@ export default function ClientList() {
       return data;
     },
 
-    onMutate: async (clientData: NewClient) => {
-      await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
+    // Look for onMutate inside addClientMutation (around line 237)
+onMutate: async (clientData: NewClient) => {
+  await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
 
-      const previous = queryClient.getQueryData<ClientWithReturns[]>([
-        "/api/clients",
-      ]);
+  const previous = queryClient.getQueryData<ClientWithReturns[]>(["/api/clients"]);
+  const tempId = `temp-${Date.now()}`;
 
-      const tempId = `temp-${Date.now()}`;
+  // NEW LOGIC: Generate months from the Start Date to Today
+  const start = new Date(clientData.filingStartDate + "-01");
+  const today = new Date();
+  const optimisticReturns: GstReturn[] = [];
 
-      const currentMonthStr = `${new Date().getFullYear()}-${String(
-        new Date().getMonth() + 1
-      ).padStart(2, "0")}`;
+  // Loop through months from start until today
+  let current = new Date(start);
+  while (current <= today) {
+    const monthStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}`;
+    
+    optimisticReturns.push({
+      id: `temp-ret-${tempId}-${monthStr}`,
+      month: monthStr,
+      gstr1: "Pending", // Default everything to Pending
+      gstr3b: "Pending",
+    } as unknown as GstReturn);
 
-      const currentIndex = months.indexOf(currentMonthStr);
+    current.setMonth(current.getMonth() + 1); // Move to next month
+  }
 
-      console.log(
-        "onMutate - previousReturns:",
-        clientData.previousReturns,
-        "currentIndex:",
-        currentIndex,
-        "months:",
-        months
-      );
+  const optimisticClient: ClientWithReturns = {
+    id: tempId,
+    name: clientData.name,
+    gstin: clientData.gstin,
+    filing_start_date: clientData.filingStartDate, // Add this
+    assignedToId: clientData.assignedToId || "",
+    returns: optimisticReturns,
+    gstUsername: clientData.gstUsername,
+    gstPassword: clientData.gstPassword,
+    remarks: clientData.remarks,
+  } as unknown as ClientWithReturns;
 
-      let optimisticReturns: GstReturn[] = [];
+  queryClient.setQueryData<ClientWithReturns[] | undefined>(
+    ["/api/clients"],
+    (old) => (old ? [optimisticClient, ...old] : [optimisticClient])
+  );
 
-      if (clientData.previousReturns === "mark_all_previous") {
-        const markUntilIndex =
-          currentIndex === -1 ? months.length : currentIndex;
-
-        optimisticReturns = months
-          .map((m, idx) => ({ m, idx }))
-          .filter(({ idx }) => idx < markUntilIndex)
-          .map(
-            ({ m }) =>
-              ({
-                id: `temp-ret-${tempId}-${m}`,
-                month: m,
-                gstr1: "Filed",
-                gstr3b: "Filed",
-              } as unknown as GstReturn)
-          );
-      }
-
-      const optimisticClient: ClientWithReturns = {
-        id: tempId,
-        name: clientData.name,
-        gstin: clientData.gstin,
-        assignedToId: clientData.assignedToId || "",
-        returns: optimisticReturns,
-        gstUsername: clientData.gstUsername,
-        gstPassword: clientData.gstPassword,
-        remarks: clientData.remarks,
-      } as unknown as ClientWithReturns;
-
-      queryClient.setQueryData<ClientWithReturns[] | undefined>(
-        ["/api/clients"],
-        (old) => (old ? [optimisticClient, ...old] : [optimisticClient])
-      );
-
-      return { previous, tempId };
-    },
+  return { previous, tempId };
+},
 
     onError: (error: any, newClientArg, context: any) => {
       queryClient.setQueryData(["/api/clients"], context?.previous);
@@ -350,6 +336,7 @@ export default function ClientList() {
         name: "",
         gstin: "",
         assignedToId: "",
+        filingStartDate: "",
         gstUsername: "",
         gstPassword: "",
         remarks: "",
@@ -555,6 +542,21 @@ export default function ClientList() {
                       </div>
                     )}
                   </div>
+                  <div className="grid gap-2">
+  <Label htmlFor="filing-start">Filing Commencement Month *</Label>
+  <Input
+    id="filing-start"
+    type="month" // This creates the month/year picker automatically
+    value={newClient.filingStartDate}
+    onChange={(e) =>
+      setNewClient({ ...newClient, filingStartDate: e.target.value })
+    }
+    required
+  />
+  <p className="text-xs text-muted-foreground">
+    From which month should we start tracking returns?
+  </p>
+</div>
 
                   <div className="grid gap-2">
                     <Label htmlFor="gst-username">GST Portal Username</Label>
@@ -739,6 +741,7 @@ export default function ClientList() {
                         name: "",
                         gstin: "",
                         assignedToId: "",
+                        filingStartDate: "",
                         gstUsername: "",
                         gstPassword: "",
                         remarks: "",
@@ -1043,7 +1046,8 @@ export default function ClientList() {
                     >
                       <TableCell className="font-medium sticky left-0 bg-card group-hover:bg-muted/30">
                         <div className="flex items-start justify-between gap-2">
-                          <div className="flex flex-col gap-2 flex-1">
+                          <div className="flex fl
+                          ex-col gap-2 flex-1">
                             <div className="flex flex-col">
                               <span className="text-sm text-foreground font-medium">
                                 {client.name}
@@ -1114,48 +1118,41 @@ export default function ClientList() {
                         );
 
                         return (
-                          <TableCell
-                            key={month}
-                            className="text-center border-l border-border/50"
-                          >
-                            <div className="flex flex-col gap-1 items-center">
-                              <StatusBadge
-                                status={
-                                  ret?.gstr1 ??
-                                  (isOverdue(month, "gstr1")
-                                    ? "Late"
-                                    : "Pending")
-                                }
-                                canEdit={isAdmin}
-                                onClick={() =>
-                                  handleStatusChange(
-                                    client,
-                                    month,
-                                    "gstr1"
-                                  )
-                                }
-                                dueDate={getDueDate(month, "gstr1")}
-                              />
+                          <TableCell className="p-0 border-l border-border/50">
+  {/* This DIV is the magic 'Ribbon' container */}
+  <div className="flex gap-4 overflow-x-auto py-3 px-4 no-scrollbar scroll-smooth max-w-[500px]">
+    {/* Now we map the months INSIDE the ribbon div */}
+    {client.returns
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map((ret) => {
+        const month = ret.month;
+        return (
+          <div key={month} className="flex-shrink-0 border-r border-border/40 pr-4 last:border-0">
+            {/* Month Header inside the ribbon */}
+            <p className="text-[10px] font-bold mb-1.5 uppercase text-muted-foreground tracking-tighter">
+              {new Date(month + "-01").toLocaleString('default', { month: 'short', year: '2-digit' })}
+            </p>
+            
+            <div className="flex flex-col gap-1 items-center">
+              <StatusBadge
+                status={ret?.gstr1 ?? (isOverdue(month, "gstr1") ? "Late" : "Pending")}
+                canEdit={isAdmin}
+                onClick={() => handleStatusChange(client, month, "gstr1")}
+                dueDate={getDueDate(month, "gstr1")}
+              />
 
-                              <StatusBadge
-                                status={
-                                  ret?.gstr3b ??
-                                  (isOverdue(month, "gstr3b")
-                                    ? "Late"
-                                    : "Pending")
-                                }
-                                canEdit={isAdmin}
-                                onClick={() =>
-                                  handleStatusChange(
-                                    client,
-                                    month,
-                                    "gstr3b"
-                                  )
-                                }
-                                dueDate={getDueDate(month, "gstr3b")}
-                              />
-                            </div>
-                          </TableCell>
+              <StatusBadge
+                status={ret?.gstr3b ?? (isOverdue(month, "gstr3b") ? "Late" : "Pending")}
+                canEdit={isAdmin}
+                onClick={() => handleStatusChange(client, month, "gstr3b")}
+                dueDate={getDueDate(month, "gstr3b")}
+              />
+            </div>
+          </div>
+        );
+      })}
+  </div>
+</TableCell>
                         );
                       })}
                     </TableRow>

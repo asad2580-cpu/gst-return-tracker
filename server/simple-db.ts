@@ -31,6 +31,7 @@ db.prepare(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     gstin TEXT UNIQUE NOT NULL,
+    filing_start_date TEXT,
     assignedToId INTEGER,
     gstUsername TEXT,
     gstPassword TEXT,

@@ -83,118 +83,91 @@ export async function registerRoutes(
   // Create a new client (admin only)
 app.post("/api/clients", requireAdmin, async (req, res, next) => {
   try {
-    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks, previousReturns } = req.body;
+    const { 
+      name, 
+      gstin, 
+      assignedToId, 
+      gstUsername, 
+      gstPassword, 
+      remarks, 
+      previousReturns, 
+      filingStartDate // This comes from your new form field
+    } = req.body;
     
-    // Validate required inputs
-    if (!name || !gstin || !assignedToId) {
-      return res.status(400).json("Missing required fields: name, gstin, or assignedToId");
+    // 1. Validate required inputs
+    if (!name || !gstin || !assignedToId || !filingStartDate) {
+      return res.status(400).json("Missing required fields: Name, GSTIN, Assigned Staff, or Start Month");
     }
 
-    // Validate GSTIN format
+    // 2. Validate GSTIN format
     const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
     if (!gstinRegex.test(gstin.toUpperCase())) {
       return res.status(400).json("Invalid GSTIN format");
     }
 
-    // Check if GSTIN already exists
+    // 3. Check for existing GSTIN
     const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ?").get(gstin);
     if (existingClient) {
       return res.status(400).json("A client with this GSTIN already exists");
     }
 
-    // Insert new client with all fields
+    // 4. Insert New Client
     const result = db.prepare(
-      `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
-
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.lastInsertRowid);
-
-    // Create returns for last 3 months
-      // Create returns for last 3 months
-const currentDate = new Date();
-// Current return period is the previous month (GST returns are filed for previous month)
-const returnPeriodDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-const currentReturnPeriod = `${returnPeriodDate.getFullYear()}-${String(returnPeriodDate.getMonth() + 1).padStart(2, '0')}`;
-const months = [];
-for (let i = 0; i < 3; i++) {
-  const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-  months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-}
-
-for (const month of months) {
-  // Determine status: if previousReturns is "mark_all_previous" and month is before current return period, mark as Filed
-  let status = 'Pending';
-  if (previousReturns === 'mark_all_previous') {
-  const [y, m] = month.split('-').map(Number);
-  const [cy, cm] = currentReturnPeriod.split('-').map(Number);
-  const monthDate = new Date(y, m - 1);
-  const currentDate = new Date(cy, cm - 1);
-  if (monthDate < currentDate) status = 'Filed';
-}
-  db.prepare(
-    "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, ?, ?)"
-  ).run(client.id, month, status, status);
-}
-
-    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
-    res.status(201).json({ ...client, returns });
-  } catch (error) {
-    console.error("Error creating client:", error);
-    next(error);
-  }
-});
-
-// Update client details (admin only)
-app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any) => {
-  try {
-    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks } = req.body;
-    
-    // Check if client exists
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-    if (!client) {
-      return res.status(404).json("Client not found");
-    }
-
-    // If GSTIN is being changed, validate it
-    if (gstin && gstin !== client.gstin) {
-      const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-      if (!gstinRegex.test(gstin.toUpperCase())) {
-        return res.status(400).json("Invalid GSTIN format");
-      }
-
-      // Check if new GSTIN already exists
-      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ? AND id != ?").get(gstin, req.params.id);
-      if (existingClient) {
-        return res.status(400).json("A client with this GSTIN already exists");
-      }
-    }
-
-    // Update client
-    db.prepare(
-      `UPDATE clients 
-       SET name = ?, gstin = ?, assignedToId = ?, gstUsername = ?, gstPassword = ?, remarks = ?
-       WHERE id = ?`
+      `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks, filing_start_date) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      name || client.name,
-      gstin || client.gstin,
-      assignedToId !== undefined ? assignedToId : client.assignedToId,
-      gstUsername !== undefined ? gstUsername : client.gstUsername,
-      gstPassword !== undefined ? gstPassword : client.gstPassword,
-      remarks !== undefined ? remarks : client.remarks,
-      req.params.id
+      name, 
+      gstin.toUpperCase(), 
+      assignedToId, 
+      gstUsername || null, 
+      gstPassword || null, 
+      remarks || null, 
+      filingStartDate
     );
 
-    const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(req.params.id);
+    const clientId = result.lastInsertRowid;
+
+    // 5. Generate Historical Return Records
+    // We start from filingStartDate and loop until the current month
+    const start = new Date(filingStartDate + "-01");
+    const today = new Date();
+    const currentMonthDate = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    let iterDate = new Date(start);
     
-    res.json({ ...updatedClient, returns });
+    // Preparation for batch insertion (Better for SQLite performance)
+    const insertReturn = db.prepare(
+      "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, ?, ?)"
+    );
+
+    // This loop creates every month from the start date to the current month
+    while (iterDate <= currentMonthDate) {
+      const monthStr = `${iterDate.getFullYear()}-${String(iterDate.getMonth() + 1).padStart(2, '0')}`;
+      
+      // LOGIC: If 'mark_all_previous' is checked, mark past months as 'Filed'
+      // The current month remains 'Pending'
+      let status = 'Pending';
+      if (previousReturns === 'mark_all_previous' && iterDate < currentMonthDate) {
+        status = 'Filed';
+      }
+
+      insertReturn.run(clientId, monthStr, status, status);
+
+      // Advance to the next month
+      iterDate.setMonth(iterDate.getMonth() + 1);
+    }
+
+    // 6. Fetch the complete object to return to the frontend
+    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
+    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(clientId);
+
+    res.status(201).json({ ...client, returns });
+
   } catch (error) {
-    console.error("Error updating client:", error);
+    console.error("Critical error in post handler:", error);
     next(error);
   }
 });
-
   // Reassign client to different staff (admin only)
   app.patch("/api/clients/:id/assign", requireAdmin, async (req: any, res: any, next: any) => {
     try {
