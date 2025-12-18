@@ -1,3 +1,4 @@
+import { BulkImportDialog } from "../components/BulkImportDialog";
 import React, { useMemo, useState } from "react";
 import { Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
@@ -459,6 +460,8 @@ export default function ClientList() {
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
+          <h1>Clients</h1>
+    <BulkImportDialog />
           <div className="relative flex-1 sm:w-64">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input

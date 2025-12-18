@@ -166,52 +166,65 @@ app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
     }
 
     // 1. Fetch all staff to map Email -> ID (assuming Excel uses email to identify staff)
+    // 1. Fetch all staff and normalize their emails for a perfect match
     const staffRows = db.prepare("SELECT id, email FROM users WHERE role = 'staff'").all() as {id: number, email: string}[];
-    const staffMap = new Map(staffRows.map(s => [s.email.toLowerCase(), s.id]));
+    
+    // We create a Map where keys are lowercase and trimmed: ' admin@gmail.com ' becomes 'admin@gmail.com'
+    const staffMap = new Map(staffRows.map(s => [s.email.toLowerCase().trim(), s.id]));
 
-    // 2. Prepare the GSTIN regex (reusing your logic)
+    // 2. Prepare the GSTIN regex
     const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
     // 3. START TRANSACTION
-    // ... inside app.post("/api/clients/bulk") ...
+    const runTransaction = db.transaction((clientData: BulkClientInput[]) => {
+      const results = [];
 
-const runTransaction = db.transaction((clientData: BulkClientInput[]) => {
-  const results = [];
+      for (const item of clientData) {
+        // Clean the incoming Excel data
+        const name = item.name;
+        const gstin = item.gstin?.toUpperCase().trim();
+        const staffEmail = item.staffEmail?.toLowerCase().trim();
+        const { gstUsername, gstPassword, remarks } = item;
 
-  for (const item of clientData) {
-    const { name, gstin, staffEmail, gstUsername, gstPassword, remarks } = item;
+        // Validation: Look up the ID using the cleaned email
+        const assignedToId = staffMap.get(staffEmail);
+        
+        if (!assignedToId) {
+          throw new Error(`Staff email "${item.staffEmail}" not found. Please ensure this staff exists in the Staff Management tab.`);
+        }
 
-    // 1. Validate Staff
-    const assignedToId = staffMap.get(staffEmail?.toLowerCase());
-    if (!assignedToId) throw new Error(`Staff email "${staffEmail}" not found in system.`);
+        if (!gstin || !gstinRegex.test(gstin)) {
+          throw new Error(`Invalid GSTIN format for client "${name}": ${item.gstin}`);
+        }
 
-    // 2. Validate GSTIN Format
-    if (!gstinRegex.test(gstin.toUpperCase())) throw new Error(`Invalid GSTIN format for client: ${name}`);
+        // Check for existing GSTIN
+        const existing = db.prepare("SELECT name FROM clients WHERE gstin = ?").get(gstin);
+        if (existing) {
+          throw new Error(`GSTIN ${gstin} is already assigned to "${existing.name}"`);
+        }
 
-    // 3. Check for Duplicate GSTIN (New: Better Error Message)
-    const existing = db.prepare("SELECT name FROM clients WHERE gstin = ?").get(gstin);
-    if (existing) throw new Error(`GSTIN ${gstin} is already registered to client: ${existing.name}`);
+        // Insert Client
+        const result = db.prepare(
+          `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
 
-    // 4. Insert Client
-    const result = db.prepare(
-      `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+        const clientId = result.lastInsertRowid;
 
-    const clientId = result.lastInsertRowid;
-
-    // 5. Generate Returns
-    const currentDate = new Date();
-    for (let i = 0; i < 3; i++) {
-      const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-      const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      db.prepare("INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')").run(clientId, month);
-    }
-    
-    results.push(clientId);
-  }
-  return results;
-});
+        // Generate 3 months of returns
+        const currentDate = new Date();
+        for (let i = 0; i < 3; i++) {
+          const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+          const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          db.prepare(
+            "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
+          ).run(clientId, month);
+        }
+        
+        results.push(clientId);
+      }
+      return results;
+    });
 
     // 4. EXECUTE
     const insertedIds = runTransaction(clients);
