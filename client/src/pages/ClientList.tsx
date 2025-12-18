@@ -170,7 +170,7 @@ export default function ClientList() {
     }));
   };
 
-  const { data: clients, isLoading } = useQuery<ClientWithReturns[]>({
+  const { data: clients, isLoading, refetch } = useQuery<ClientWithReturns[]>({
     queryKey: ["/api/clients"],
   });
 
@@ -461,7 +461,7 @@ export default function ClientList() {
 
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
           <h1>Clients</h1>
-    <BulkImportDialog />
+    <BulkImportDialog onSuccess={() => refetch()} />
           <div className="relative flex-1 sm:w-64">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
