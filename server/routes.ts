@@ -5,6 +5,16 @@ import { createServer, type Server } from "http";
 import { setupAuth } from "./auth";
 import { attachUserFromHeader } from "./auth";
 
+interface BulkClientInput {
+  name: string;
+  gstin: string;
+  staffEmail: string;
+  gstUsername?: string;
+  gstPassword?: string;
+  remarks?: string;
+}
+
+
 
 /** Typed auth middlewares (safe checks) */
 function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -23,6 +33,8 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
   }
   next();
 }
+
+
 
 export async function registerRoutes(
   httpServer: Server,
@@ -161,40 +173,45 @@ app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
     const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
     // 3. START TRANSACTION
-    const runTransaction = db.transaction((clientData) => {
-      const results = [];
+    // ... inside app.post("/api/clients/bulk") ...
 
-      for (const item of clientData) {
-        const { name, gstin, staffEmail, gstUsername, gstPassword, remarks } = item;
+const runTransaction = db.transaction((clientData: BulkClientInput[]) => {
+  const results = [];
 
-        // Validation
-        const assignedToId = staffMap.get(staffEmail?.toLowerCase());
-        if (!assignedToId) throw new Error(`Staff email ${staffEmail} not found`);
-        if (!gstinRegex.test(gstin.toUpperCase())) throw new Error(`Invalid GSTIN: ${gstin}`);
+  for (const item of clientData) {
+    const { name, gstin, staffEmail, gstUsername, gstPassword, remarks } = item;
 
-        // Insert Client
-        const result = db.prepare(
-          `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+    // 1. Validate Staff
+    const assignedToId = staffMap.get(staffEmail?.toLowerCase());
+    if (!assignedToId) throw new Error(`Staff email "${staffEmail}" not found in system.`);
 
-        const clientId = result.lastInsertRowid;
+    // 2. Validate GSTIN Format
+    if (!gstinRegex.test(gstin.toUpperCase())) throw new Error(`Invalid GSTIN format for client: ${name}`);
 
-        // Generate 3 months of returns (Reusing your logic)
-        const currentDate = new Date();
-        for (let i = 0; i < 3; i++) {
-          const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-          const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-          
-          db.prepare(
-            "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
-          ).run(clientId, month);
-        }
-        
-        results.push(clientId);
-      }
-      return results;
-    });
+    // 3. Check for Duplicate GSTIN (New: Better Error Message)
+    const existing = db.prepare("SELECT name FROM clients WHERE gstin = ?").get(gstin);
+    if (existing) throw new Error(`GSTIN ${gstin} is already registered to client: ${existing.name}`);
+
+    // 4. Insert Client
+    const result = db.prepare(
+      `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+
+    const clientId = result.lastInsertRowid;
+
+    // 5. Generate Returns
+    const currentDate = new Date();
+    for (let i = 0; i < 3; i++) {
+      const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+      const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      db.prepare("INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')").run(clientId, month);
+    }
+    
+    results.push(clientId);
+  }
+  return results;
+});
 
     // 4. EXECUTE
     const insertedIds = runTransaction(clients);
