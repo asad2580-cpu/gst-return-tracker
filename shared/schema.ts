@@ -25,6 +25,7 @@ export const clients = pgTable("clients", {
   gstUsername: text("gst_username"),
   gstPassword: text("gst_password"),
   remarks: text("remarks"),
+  filingStartDate: timestamp("filing_start_date"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

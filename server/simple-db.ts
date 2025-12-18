@@ -24,31 +24,8 @@ db.prepare(`
   );
 `).run();
 
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS clients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    gstin TEXT UNIQUE NOT NULL,
-    assignedToId INTEGER DEFAULT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (assignedToId) REFERENCES users(id) ON DELETE SET NULL
-  );
-`).run();
 
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS gstReturns (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    clientId INTEGER NOT NULL,
-    month TEXT NOT NULL,
-    gstr1 TEXT NOT NULL DEFAULT 'Pending',
-    gstr3b TEXT NOT NULL DEFAULT 'Pending',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(clientId, month),
-    FOREIGN KEY (clientId) REFERENCES clients(id) ON DELETE CASCADE
-  );
-`).run();
 
-// Add after the existing users table creation
 db.prepare(`
   CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +38,8 @@ db.prepare(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `).run();
+
+
 
 db.prepare(`
   CREATE TABLE IF NOT EXISTS gstReturns (
@@ -75,6 +54,23 @@ db.prepare(`
     FOREIGN KEY (clientId) REFERENCES clients(id)
   );
 `).run();
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY
+  );
+`);
+
+
+// ---- migrations ----
+
+const currentVersion =
+  db.prepare(`SELECT MAX(version) v FROM schema_migrations`).get()?.v ?? 0;
+
+if (currentVersion < 1) {
+  db.exec(`ALTER TABLE clients ADD COLUMN filing_start_date TEXT;`);
+  db.prepare(`INSERT INTO schema_migrations (version) VALUES (1)`).run();
+}
 
 
 export default db;
