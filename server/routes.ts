@@ -124,32 +124,42 @@ app.post("/api/clients", requireAdmin, async (req, res, next) => {
 
     // Create returns for last 3 months
       // Create returns for last 3 months
-const currentDate = new Date();
-// Current return period is the previous month (GST returns are filed for previous month)
-const returnPeriodDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-const currentReturnPeriod = `${returnPeriodDate.getFullYear()}-${String(returnPeriodDate.getMonth() + 1).padStart(2, '0')}`;
-const months = [];
-for (let i = 0; i < 3; i++) {
-  const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-  months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-}
+// --- NEW DYNAMIC RETURN GENERATION ---
+    const { startMonth } = req.body;
+    
+    const today = new Date();
+    const currentMonthDate = new Date(today.getFullYear(), today.getMonth(), 1);
 
-for (const month of months) {
-  // Determine status: if previousReturns is "mark_all_previous" and month is before current return period, mark as Filed
-  let status = 'Pending';
-  if (previousReturns === 'mark_all_previous') {
-  const [y, m] = month.split('-').map(Number);
-  const [cy, cm] = currentReturnPeriod.split('-').map(Number);
-  const monthDate = new Date(y, m - 1);
-  const currentDate = new Date(cy, cm - 1);
-  if (monthDate < currentDate) status = 'Filed';
-}
-  db.prepare(
-    "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, ?, ?)"
-  ).run(client.id, month, status, status);
-}
+    // 1. Determine Start Date: Use user input or default to 2 months ago
+    let iterDate: Date;
+    if (startMonth) {
+      const [year, month] = startMonth.split('-').map(Number);
+      iterDate = new Date(year, month - 1, 1);
+    } else {
+      iterDate = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+    }
 
-    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
+    // 2. Loop from Start Date until the Current Month
+    while (iterDate <= currentMonthDate) {
+      const monthStr = `${iterDate.getFullYear()}-${String(iterDate.getMonth() + 1).padStart(2, '0')}`;
+      
+      let status = 'Pending';
+      
+      // If user chose 'mark_all_previous', mark everything before THIS month as Filed
+      if (previousReturns === 'mark_all_previous' && iterDate < currentMonthDate) {
+        status = 'Filed';
+      }
+
+      db.prepare(
+        "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, ?, ?)"
+      ).run(client.id, monthStr, status, status);
+
+      // Move to next month
+      iterDate.setMonth(iterDate.getMonth() + 1);
+    }
+    // --- END OF DYNAMIC GENERATION ---
+
+    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ? ORDER BY month DESC").all(client.id);
     res.status(201).json({ ...client, returns });
   } catch (error) {
     console.error("Error creating client:", error);
