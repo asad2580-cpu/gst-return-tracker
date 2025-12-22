@@ -36,12 +36,17 @@ export default function Login() {
     return <Redirect to="/dashboard" />;
   }
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    loginMutation.mutate(loginForm, {
-      onSuccess: () => setLocation("/dashboard"),
-    });
-  };
+ const handleLogin = (e: React.FormEvent) => {
+  e.preventDefault();
+  loginMutation.mutate(loginForm, {
+    onSuccess: () => {
+      // Only clear client and staff data, not user auth data
+      queryClient.removeQueries({ queryKey: ["/api/clients"] });
+      queryClient.removeQueries({ queryKey: ["/api/users"] });
+      setLocation("/dashboard");
+    },
+  });
+};
   const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
     registerMutation.mutate(
