@@ -1,9 +1,22 @@
+import { Resend } from 'resend';
+import { tempOTPs } from "./otp-store"; // Remove the local tempOTPs variable you added earlier
+import * as dotenv from 'dotenv';
 import db from "./simple-db";
 import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { setupAuth } from "./auth";
 import { attachUserFromHeader } from "./auth";
+import { Router } from "express";
+
+dotenv.config(); 
+
+// 2. Initialize Resend correctly
+// Use only ONE declaration for resend
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// 3. Define your router
+const router = Router();
 
 interface BulkClientInput {
   name: string;
@@ -36,6 +49,7 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
 
 
 
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -45,24 +59,56 @@ export async function registerRoutes(
   // Ensure Express parses incoming JSON payloads
   app.use(express.json());
 
+  // Temporary memory to store OTPs. 
+// Format: { "admin@email.com": { otp: "123456", expires: 1700000000 } }
+const tempOTPs: Record<string, { otp: string, expires: number }> = {};
 
-  // Admin: list staff created by the logged-in admin
-  app.get("/api/users", requireAdmin, async (req: any, res: any, next: any) => {
-    try {
-      const adminId = req.user?.id;
-      if (!adminId) return res.status(401).json({ error: "Unauthorized" });
+/** Helper to generate a random 6-digit OTP */
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-      // Direct SQLite query - simple and clean!
-      const rows = db
-        .prepare("SELECT id, email, name, role, created_by FROM users WHERE role = 'staff' AND created_by = ?")
-        .all(adminId);
+// --- NEW ENDPOINT: VERIFY ADMIN & SEND OTP ---
+// server/routes.ts
+app.post("/api/verify-admin", async (req, res) => {
+  const { adminEmail } = req.body;
+  const normalizedEmail = adminEmail?.toLowerCase().trim();
 
-      return res.json(rows);
-    } catch (error) {
-      console.error("Error fetching staff:", error);
-      next(error);
-    }
-  });
+  const admin = db.prepare("SELECT name FROM users WHERE email = ? AND role = 'admin'").get(normalizedEmail) as any;
+  if (!admin) return res.status(400).json("Admin not found");
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expires = Date.now() + 10 * 60 * 1000;
+
+  db.prepare("INSERT OR REPLACE INTO otp_codes (admin_email, otp, expires) VALUES (?, ?, ?)")
+    .run(normalizedEmail, otp, expires);
+
+  // --- NEW: SEND REAL EMAIL ---
+  try {
+    await resend.emails.send({
+      from: 'GST Pro <onboarding@resend.dev>', // Resend lets you use this for testing
+      to: normalizedEmail,
+      subject: 'Staff Verification Code',
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+          <h2>Staff Registration Request</h2>
+          <p>Hello ${admin.name || 'Admin'},</p>
+          <p>A new staff member is trying to register under your account. Use the code below to authorize them:</p>
+          <div style="font-size: 32px; font-weight: bold; color: #2563eb; letter-spacing: 5px; margin: 20px 0;">
+            ${otp}
+          </div>
+          <p>This code will expire in 10 minutes.</p>
+          <p>If you did not expect this, please ignore this email.</p>
+        </div>
+      `,
+    });
+    
+    console.log(`--- EMAIL SENT SUCCESSFULLY TO [${normalizedEmail}] ---`);
+    return res.json({ message: "OTP sent to your Admin's email." });
+    
+  } catch (error) {
+    console.error("Email sending failed:", error);
+    return res.status(500).json("Failed to send email. Please check server logs.");
+  }
+});
 
   // Get all clients (admin sees all, staff sees only assigned)
   app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {

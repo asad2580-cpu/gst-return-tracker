@@ -1,4 +1,5 @@
 // server/auth.ts
+import { tempOTPs } from "./otp-store";
 import { Router, Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
@@ -65,9 +66,9 @@ router.use((req, _res, next) => {
 // Register
 router.post("/register", async (req: Request, res: Response) => {
   try {
-    const { email, password, name, role, adminEmail } = req.body;
+    const { email, password, name, role, adminEmail, otp } = req.body; // 1. Added otp here
 
-    if (!email || !password || password.length < 6) {
+    if (!email || !password || password.length < 8) {
       return res.status(400).json({ error: "Invalid input" });
     }
 
@@ -75,19 +76,40 @@ router.post("/register", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid role" });
     }
 
-    // If staff registration includes adminEmail, validate it and lookup admin id
     let createdBy: number | null = null;
-    if (role === "staff") {
-      if (!adminEmail) {
-        return res.status(400).json({ error: "adminEmail is required when registering as staff" });
-      }
-      const adminRow = db.prepare("SELECT id, role FROM users WHERE email = ?").get(adminEmail);
+    
+    // --- 2. UPDATED STAFF LOGIC ---
+    // --- 2. UPDATED STAFF LOGIC ---
+if (role === "staff") {
+  const normalizedAdminEmail = adminEmail.toLowerCase().trim();
+  
+  // 1. Fetch the OTP from the DB table we just made
+  const record = db.prepare("SELECT otp, expires FROM otp_codes WHERE admin_email = ?")
+                   .get(normalizedAdminEmail) as { otp: string, expires: number } | undefined;
+
+  const isOtpValid = record && String(record.otp) === String(otp) && Date.now() < record.expires;
+
+  if (!isOtpValid) {
+    return res.status(400).json({ error: "Invalid or expired OTP. Please verify with your Admin." });
+  }
+
+  // 2. Clear the OTP from DB after use
+  db.prepare("DELETE FROM otp_codes WHERE admin_email = ?").run(normalizedAdminEmail);
+
+  // ... rest of the code
+      const adminRow = db.prepare("SELECT id, role FROM users WHERE email = ?").get(adminEmail) as any;
       if (!adminRow || adminRow.role !== "admin") {
         return res.status(400).json({ error: "Invalid adminEmail: admin not found" });
       }
+      
       createdBy = adminRow.id;
+      
+      // Clear OTP after successful use
+      delete tempOTPs[adminEmail];
     }
+    // ------------------------------
 
+    // ... rest of your existing registration logic (bcrypt, db.insert, etc.)
     const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
     if (existing) return res.status(409).json({ error: "Email already exists" });
 

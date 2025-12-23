@@ -28,6 +28,7 @@ type RegisterData = {
   name: string;
   role: "admin" | "staff";
   adminEmail?: string;
+  otp?: string;
 };
 
 export const AuthContext = createContext<AuthContextType | null>(null);
