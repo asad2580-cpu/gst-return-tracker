@@ -80,21 +80,17 @@ router.post("/register", async (req: Request, res: Response) => {
     
     // --- 2. UPDATED STAFF LOGIC ---
     // --- 2. UPDATED STAFF LOGIC ---
-if (role === "staff") {
-  const normalizedAdminEmail = adminEmail.toLowerCase().trim();
-  
-  // 1. Fetch the OTP from the DB table we just made
+if (role === "admin") {
+  const normalizedEmail = email.toLowerCase().trim();
   const record = db.prepare("SELECT otp, expires FROM otp_codes WHERE admin_email = ?")
-                   .get(normalizedAdminEmail) as { otp: string, expires: number } | undefined;
+                   .get(normalizedEmail) as any;
 
-  const isOtpValid = record && String(record.otp) === String(otp) && Date.now() < record.expires;
-
-  if (!isOtpValid) {
-    return res.status(400).json({ error: "Invalid or expired OTP. Please verify with your Admin." });
+  if (!record || String(record.otp) !== String(otp) || Date.now() > record.expires) {
+    return res.status(400).json({ error: "Invalid or expired OTP." });
   }
-
-  // 2. Clear the OTP from DB after use
-  db.prepare("DELETE FROM otp_codes WHERE admin_email = ?").run(normalizedAdminEmail);
+  
+  // Success! Delete the code so it can't be reused
+  db.prepare("DELETE FROM otp_codes WHERE admin_email = ?").run(normalizedEmail);
 
   // ... rest of the code
       const adminRow = db.prepare("SELECT id, role FROM users WHERE email = ?").get(adminEmail) as any;

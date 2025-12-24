@@ -486,5 +486,36 @@ app.patch("/api/returns/:id", requireAdmin, async (req: any, res: any, next: any
     next(error);
   }
 });
+
+// server/routes.ts
+
+app.post("/api/send-registration-otp", async (req, res) => {
+  const { email } = req.body;
+  const normalizedEmail = email?.toLowerCase().trim();
+
+  // 1. Check if email is already taken
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(normalizedEmail);
+  if (existing) return res.status(400).send("Email already registered");
+
+  // 2. Generate and Save OTP
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expires = Date.now() + 10 * 60 * 1000;
+
+  db.prepare("INSERT OR REPLACE INTO otp_codes (admin_email, otp, expires) VALUES (?, ?, ?)")
+    .run(normalizedEmail, otp, expires);
+
+  // 3. Send via Resend
+  try {
+    await resend.emails.send({
+      from: 'GST Pro <onboarding@resend.dev>',
+      to: normalizedEmail, // Note: Resend only sends to YOUR email in free tier
+      subject: 'Verify Your Email',
+      html: `<h1>Your verification code is: ${otp}</h1>`,
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).send("Failed to send email");
+  }
+});
   return httpServer;
 }

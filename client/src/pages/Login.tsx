@@ -1,5 +1,5 @@
 import { queryClient } from "@/lib/queryClient";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation, Redirect } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from "@/components/ui/select";
+import { FcGoogle } from "react-icons/fc";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import logoUrl from "@assets/generated_images/minimalist_logo_for_an_accounting_app.png";
 import { Loader2 } from "lucide-react";
@@ -39,7 +47,10 @@ export default function Login() {
     password: "",
     role: "staff" as "staff" | "admin",
     adminEmail: "",
+    otp: "",
   });
+
+  
 
   // If user is already logged in, send them to the dashboard immediately
   if (user) {
@@ -140,6 +151,35 @@ export default function Login() {
     });
   };
 
+  const [timer, setTimer] = useState(0);
+const [regOtpSent, setRegOtpSent] = useState(false);
+
+// Timer effect for the 'Resend' button
+useEffect(() => {
+  let interval: any;
+  if (timer > 0) {
+    interval = setInterval(() => setTimer((t) => t - 1), 1000);
+  }
+  return () => clearInterval(interval);
+}, [timer]);
+
+const handleSendOtp = async () => {
+  if (!registerForm.email) return alert("Please enter your email");
+  try {
+    const res = await fetch("/api/send-registration-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: registerForm.email }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    setRegOtpSent(true);
+    setTimer(120); // Start 2-minute countdown
+    alert("OTP sent to your email!");
+  } catch (err: any) {
+    alert(err.message);
+  }
+};
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">
       {/* Background Styling */}
@@ -198,91 +238,119 @@ export default function Login() {
             </TabsContent>
 
             {/* --- REGISTER TAB --- */}
-            <TabsContent value="register" className="space-y-4">
-              <Button variant="outline" className="w-full" onClick={() => handleGoogleAuth("register")}>
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="mr-2 h-4 w-4" />
-                Quick-fill with Google
-              </Button>
+            <TabsContent value="register" className="space-y-4 pt-4">
+  <Button
+    variant="outline"
+    className="w-full flex items-center justify-center gap-2"
+    onClick={() => handleGoogleAuth("register")}
+    disabled={isGoogleLoading}
+  >
+    <FcGoogle className="h-5 w-5" />
+    Quick-fill with Google
+  </Button>
 
-              <form onSubmit={handleRegister} className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label>Full Name</Label>
-                  <Input 
-                    required 
-                    value={registerForm.name} 
-                    onChange={(e) => setRegisterForm({...registerForm, name: e.target.value})}
-                  />
-                </div>
+  <div className="space-y-2">
+    <Label>Full Name</Label>
+    <Input 
+      placeholder="John Doe" 
+      value={registerForm.name}
+      onChange={(e) => setRegisterForm({...registerForm, name: e.target.value})}
+    />
+  </div>
 
-                <div className="space-y-2">
-                  <Label>Email</Label>
-                  <Input 
-                    type="email" 
-                    required 
-                    value={registerForm.email}
-                    onChange={(e) => setRegisterForm({...registerForm, email: e.target.value})}
-                  />
-                </div>
-                <div className="space-y-2">
-  <Label>Create Password</Label>
-  <Input 
-    type="password" 
-    required 
-    placeholder="Minimum 8 characters"
-    value={registerForm.password}
-    onChange={(e) => setRegisterForm({...registerForm, password: e.target.value})}
-  />
-</div>
+  <div className="space-y-2">
+    <Label>Email</Label>
+    <Input 
+      type="email" 
+      placeholder="name@example.com" 
+      value={registerForm.email}
+      onChange={(e) => setRegisterForm({...registerForm, email: e.target.value})}
+    />
+  </div>
 
-                <div className="space-y-2">
-                  <Label>Role</Label>
-                  <select 
-                    className="w-full p-2 border rounded-md bg-background text-sm"
-                    value={registerForm.role}
-                    onChange={(e) => setRegisterForm({...registerForm, role: e.target.value as any})}
-                  >
-                    <option value="staff">Staff Member</option>
-                    <option value="admin">Admin / Manager</option>
-                  </select>
-                </div>
+  <div className="space-y-2">
+    <Label>Create Password</Label>
+    <Input 
+      type="password" 
+      placeholder="Minimum 8 characters"
+      value={registerForm.password}
+      onChange={(e) => setRegisterForm({...registerForm, password: e.target.value})}
+    />
+  </div>
 
-                {/* Staff-Specific Logic: Admin Email + OTP */}
-                {registerForm.role === "staff" && (
-                  <div className="p-3 border rounded-lg bg-muted/50 space-y-3">
-                    <Label className="text-xs uppercase font-bold text-muted-foreground">Manager Verification</Label>
-                    <div className="flex gap-2">
-                      <Input 
-                        placeholder="Admin Email" 
-                        value={registerForm.adminEmail}
-                        onChange={(e) => setRegisterForm({...registerForm, adminEmail: e.target.value})}
-                      />
-                      {!showOtpField && (
-                        <Button type="button" size="sm" onClick={handleVerifyAdmin} disabled={isVerifyingAdmin}>
-                          {isVerifyingAdmin ? <Loader2 className="h-4 w-4 animate-spin" /> : "Verify"}
-                        </Button>
-                      )}
-                    </div>
+  <div className="space-y-2">
+    <Label>Role</Label>
+    <Select 
+      value={registerForm.role} 
+      onValueChange={(v: any) => setRegisterForm({...registerForm, role: v})}
+    >
+      <SelectTrigger>
+        <SelectValue placeholder="Select role" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="admin">Admin / Manager</SelectItem>
+        <SelectItem value="staff">Staff Member</SelectItem>
+      </SelectContent>
+    </Select>
+  </div>
 
-                    {showOtpField && (
-                      <Input 
-                        placeholder="Enter 6-digit OTP" 
-                        className="border-primary"
-                        value={otp}
-                        onChange={(e) => setOtp(e.target.value)}
-                      />
-                    )}
-                  </div>
-                )}
+  {/* --- NEW: ADMIN EMAIL VERIFICATION --- */}
+  {registerForm.role === 'admin' && (
+    <div className="space-y-2 border-2 border-blue-100 bg-blue-50 rounded-md p-3">
+      <Label className="text-blue-700">Verify Your Admin Email</Label>
+      <div className="flex gap-2">
+        <Input 
+          placeholder="6-digit OTP" 
+          value={registerForm.otp} 
+          onChange={(e) => setRegisterForm({...registerForm, otp: e.target.value})}
+        />
+        <Button 
+          type="button" 
+          variant="outline" 
+          size="sm"
+          onClick={handleSendOtp} // The function we created for Admin OTP
+          disabled={timer > 0}
+        >
+          {timer > 0 ? `${Math.floor(timer/60)}:${(timer%60).toString().padStart(2,'0')}` : "Send OTP"}
+        </Button>
+      </div>
+      {timer > 0 && <p className="text-xs text-blue-600">Resend available after timer ends.</p>}
+    </div>
+  )}
 
-                <Button 
-                  type="submit" 
-                  className="w-full" 
-                  disabled={registerMutation.isPending || (registerForm.role === "staff" && !showOtpField)}
-                >
-                  Create Account
-                </Button>
-              </form>
-            </TabsContent>
+  {/* --- STAFF VERIFICATION --- */}
+  {registerForm.role === 'staff' && (
+    <div className="space-y-2 border-2 border-orange-100 bg-orange-50 rounded-md p-3">
+      <Label className="text-orange-700">Manager's Email (for OTP)</Label>
+      <div className="flex gap-2">
+        <Input 
+          placeholder="admin@example.com" 
+          value={registerForm.adminEmail}
+          onChange={(e) => setRegisterForm({...registerForm, adminEmail: e.target.value})}
+        />
+        <Button type="button" variant="outline" size="sm" onClick={handleVerifyAdmin}>
+          Get OTP
+        </Button>
+      </div>
+      {showOtpField && (
+        <Input 
+          className="mt-2"
+          placeholder="Enter OTP from Admin" 
+          value={registerForm.otp}
+          onChange={(e) => setRegisterForm({...registerForm, otp: e.target.value})}
+        />
+      )}
+    </div>
+  )}
+
+  <Button 
+    className="w-full mt-4" 
+    onClick={() => registerMutation.mutate(registerForm)}
+    disabled={registerMutation.isPending}
+  >
+    {registerMutation.isPending ? "Creating Account..." : "Create Account"}
+  </Button>
+</TabsContent>
           </Tabs>
         </CardContent>
       </Card>
