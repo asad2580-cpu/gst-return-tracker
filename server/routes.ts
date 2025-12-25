@@ -1,7 +1,9 @@
+import { db } from "./db";
+import { users, clients, gstReturns, otpCodes, assignmentLogs } from "@shared/schema";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { Resend } from 'resend';
 import { tempOTPs } from "./otp-store"; // Remove the local tempOTPs variable you added earlier
 import * as dotenv from 'dotenv';
-import db from "./simple-db";
 import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
