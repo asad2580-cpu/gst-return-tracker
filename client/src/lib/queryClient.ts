@@ -62,7 +62,6 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    // Get the token from localStorage
     const token = localStorage.getItem("accessToken");
     
     const headers: Record<string, string> = {};
@@ -70,16 +69,25 @@ export const getQueryFn: <T>(options: {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    const res = await fetch(queryKey.join("/") as string, {
-      credentials: "include",
-      headers, // Add the headers here!
+    // FIX: Ensure the path is clean and doesn't have double slashes
+    const rawPath = queryKey.join("/");
+    const cleanPath = rawPath.startsWith("//") ? rawPath.substring(1) : rawPath;
+
+    const res = await fetch(cleanPath, {
+      headers,
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
+      // Clear potentially expired token
+      localStorage.removeItem("accessToken");
       return null;
     }
 
-    await throwIfResNotOk(res);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+
     return await res.json();
   };
 

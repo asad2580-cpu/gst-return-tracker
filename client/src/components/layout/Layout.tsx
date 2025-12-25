@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
-import { LayoutDashboard, Users, FileText, LogOut, Menu } from "lucide-react";
+import { LayoutDashboard, Users, FileText, LogOut, Menu, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import logoUrl from "@assets/generated_images/minimalist_logo_for_an_accounting_app.png";
@@ -19,7 +19,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/clients", label: "Client Returns", icon: FileText },
     ...(user.role === "admin"
-      ? [{ href: "/staff", label: "Staff Management", icon: Users }]
+      ? [
+          { href: "/staff", label: "Staff Management", icon: Users },
+          { href: "/history", label: "Audit History", icon: History } // Add this line!
+        ]
       : []),
   ];
 
