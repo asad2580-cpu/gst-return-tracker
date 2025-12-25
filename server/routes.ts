@@ -18,6 +18,15 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 // 3. Define your router
 const router = Router();
 
+// Industry Standard Backoff: 1m, 2m, 5m, 10m, 30m
+const BACKOFF_TIMERS = [60, 120, 300, 600, 1800];
+
+function getRequiredWaitTime(attemptCount: number): number {
+  // If they've tried more than 5 times, keep it at 30 mins
+  const index = Math.min(attemptCount, BACKOFF_TIMERS.length - 1);
+  return BACKOFF_TIMERS[index];
+}
+
 interface BulkClientInput {
   name: string;
   gstin: string;
@@ -70,43 +79,34 @@ const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString()
 // server/routes.ts
 app.post("/api/verify-admin", async (req, res) => {
   const { adminEmail } = req.body;
-  const normalizedEmail = adminEmail?.toLowerCase().trim();
+  if (!adminEmail) return res.status(400).send("Admin email is required");
 
-  const admin = db.prepare("SELECT name FROM users WHERE email = ? AND role = 'admin'").get(normalizedEmail) as any;
-  if (!admin) return res.status(400).json("Admin not found");
+  const normalizedAdminEmail = adminEmail.toLowerCase().trim();
+  const admin = db.prepare("SELECT id FROM users WHERE email = ? AND role = 'admin'").get(normalizedAdminEmail);
+  
+  if (!admin) return res.status(404).send("No administrator found.");
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = Date.now() + 10 * 60 * 1000;
+  const expiresAt = Date.now() + 10 * 60 * 1000;
 
-  db.prepare("INSERT OR REPLACE INTO otp_codes (admin_email, otp, expires) VALUES (?, ?, ?)")
-    .run(normalizedEmail, otp, expires);
+  // USE THE NEW SCHEMA COLUMNS: email, type, expires_at
+  db.prepare(`
+    INSERT OR REPLACE INTO otp_codes (email, otp, type, expires_at, attempt_count, last_sent_at) 
+    VALUES (?, ?, 'authorization', ?, 0, ?)
+  `).run(normalizedAdminEmail, otp, expiresAt, Date.now());
 
-  // --- NEW: SEND REAL EMAIL ---
   try {
     await resend.emails.send({
-      from: 'GST Pro <onboarding@resend.dev>', // Resend lets you use this for testing
-      to: normalizedEmail,
-      subject: 'Staff Verification Code',
-      html: `
-        <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2>Staff Registration Request</h2>
-          <p>Hello ${admin.name || 'Admin'},</p>
-          <p>A new staff member is trying to register under your account. Use the code below to authorize them:</p>
-          <div style="font-size: 32px; font-weight: bold; color: #2563eb; letter-spacing: 5px; margin: 20px 0;">
-            ${otp}
-          </div>
-          <p>This code will expire in 10 minutes.</p>
-          <p>If you did not expect this, please ignore this email.</p>
-        </div>
-      `,
+      from: 'GST Pro <onboarding@resend.dev>',
+      to: normalizedAdminEmail,
+      subject: 'Staff Registration OTP',
+      html: `<p>A staff member is registering. Provide them this code: <strong>${otp}</strong></p>`,
     });
     
-    console.log(`--- EMAIL SENT SUCCESSFULLY TO [${normalizedEmail}] ---`);
-    return res.json({ message: "OTP sent to your Admin's email." });
-    
+    console.log(`--- OTP [${otp}] saved to DB for Admin [${normalizedAdminEmail}] ---`);
+    res.json({ message: "OTP sent to your Admin's email." });
   } catch (error) {
-    console.error("Email sending failed:", error);
-    return res.status(500).json("Failed to send email. Please check server logs.");
+    res.status(500).send("Failed to send email via Resend.");
   }
 });
 
@@ -489,33 +489,126 @@ app.patch("/api/returns/:id", requireAdmin, async (req: any, res: any, next: any
 
 // server/routes.ts
 
-app.post("/api/send-registration-otp", async (req, res) => {
-  const { email } = req.body;
-  const normalizedEmail = email?.toLowerCase().trim();
+// Define backoff intervals in seconds: 1m, 2m, 5m, 10m, 30m
+const BACKOFF_TIMERS = [60, 120, 300, 600, 1800];
 
-  // 1. Check if email is already taken
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(normalizedEmail);
-  if (existing) return res.status(400).send("Email already registered");
+// GET only the staff created by the logged-in Admin
+app.get("/api/users", requireAuth, (req: any, res) => {
+  const user = req.user;
 
-  // 2. Generate and Save OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = Date.now() + 10 * 60 * 1000;
+  if (user.role === 'admin') {
+    // Admins see staff they created
+    const staff = db.prepare(`
+      SELECT id, name, email, role 
+      FROM users 
+      WHERE created_by = ? AND role = 'staff'
+    `).all(user.id);
+    return res.json(staff);
+  } 
 
-  db.prepare("INSERT OR REPLACE INTO otp_codes (admin_email, otp, expires) VALUES (?, ?, ?)")
-    .run(normalizedEmail, otp, expires);
+  // Staff members see only themselves (or an empty list depending on your UI)
+  return res.json([user]);
+});
 
-  // 3. Send via Resend
+app.post("/api/otp/request", async (req, res) => {
   try {
-    await resend.emails.send({
-      from: 'GST Pro <onboarding@resend.dev>',
-      to: normalizedEmail, // Note: Resend only sends to YOUR email in free tier
-      subject: 'Verify Your Email',
-      html: `<h1>Your verification code is: ${otp}</h1>`,
-    });
-    res.json({ success: true });
+    const { email, type } = req.body; // type: 'identity' or 'authorization'
+    
+    if (!email || !['identity', 'authorization'].includes(type)) {
+      return res.status(400).json({ error: "Valid email and type are required." });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const now = Date.now();
+
+    // 1. Check for Throttling (Rate Limiting)
+    const existing = db.prepare(
+      "SELECT * FROM otp_codes WHERE email = ? AND type = ?"
+    ).get(normalizedEmail, type) as any;
+
+    if (existing) {
+      const secondsSinceLast = (now - existing.last_sent_at) / 1000;
+      const waitRequired = BACKOFF_TIMERS[Math.min(existing.attempt_count, BACKOFF_TIMERS.length - 1)];
+
+      if (secondsSinceLast < waitRequired) {
+        const remaining = Math.ceil(waitRequired - secondsSinceLast);
+        return res.status(429).json({ 
+          error: `Rate limit exceeded. Please wait ${remaining}s.`,
+          retryAfter: remaining 
+        });
+      }
+    }
+
+    // 2. Generate OTP Data
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = now + (10 * 60 * 1000); // 10 minute expiry
+    const newAttemptCount = existing ? existing.attempt_count + 1 : 0;
+
+    // 3. Persist to Database
+    db.prepare(`
+      INSERT OR REPLACE INTO otp_codes (email, otp, type, expires_at, attempt_count, last_sent_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(normalizedEmail, otp, type, expiresAt, newAttemptCount, now);
+
+    // 4. DEVELOPMENT LOGGING (Your "Virtual Inbox")
+    console.log("\n--- 🛡️ NEW OTP GENERATED ---");
+    console.log(`📍 TARGET: ${normalizedEmail}`);
+    console.log(`🏷️  TYPE:   ${type.toUpperCase()}`);
+    console.log(`🔢 CODE:   ${otp}`);
+    console.log(`⏳ NEXT RETRY: ${BACKOFF_TIMERS[Math.min(newAttemptCount, BACKOFF_TIMERS.length - 1)]}s`);
+    console.log("---------------------------\n");
+
+    // 5. Attempt Email Delivery via Resend
+    try {
+      await resend.emails.send({
+        from: 'GST Pro <onboarding@resend.dev>',
+        to: normalizedEmail,
+        subject: type === 'identity' ? "Verify Your Email" : "Admin Authorization Required",
+        html: `<strong>Your verification code is: ${otp}</strong><p>This code expires in 10 minutes.</p>`,
+      });
+      
+      return res.json({ 
+        success: true, 
+        message: "Code sent successfully.",
+        nextRetryIn: BACKOFF_TIMERS[Math.min(newAttemptCount, BACKOFF_TIMERS.length - 1)]
+      });
+
+    } catch (emailError) {
+      // In development, we treat email failure as a "soft success"
+      // because we have the terminal log to fall back on.
+      console.warn(`⚠️ Resend failed (likely unverified email): ${normalizedEmail}`);
+      return res.json({ 
+        success: true, 
+        message: "Development Mode: Code logged to server console.",
+        nextRetryIn: BACKOFF_TIMERS[Math.min(newAttemptCount, BACKOFF_TIMERS.length - 1)]
+      });
+    }
+
   } catch (error) {
-    res.status(500).send("Failed to send email");
+    console.error("OTP Request Error:", error);
+    res.status(500).json({ error: "Internal server error." });
   }
+});
+
+app.post("/api/otp/verify", (req, res) => {
+  const { email, otp, type } = req.body;
+  const normalizedEmail = email.toLowerCase().trim();
+
+  const record = db.prepare(
+    "SELECT * FROM otp_codes WHERE email = ? AND otp = ? AND type = ?"
+  ).get(normalizedEmail, otp, type) as any;
+
+  if (!record) {
+    return res.status(400).json({ error: "Invalid code." });
+  }
+
+  if (Date.now() > record.expires_at) {
+    return res.status(400).json({ error: "Code has expired. Request a new one." });
+  }
+
+  // We DON'T delete it yet. We delete it only after successful registration 
+  // in auth.ts to ensure the "session" of verification stays active.
+  res.json({ success: true, message: "Code is valid." });
 });
   return httpServer;
 }

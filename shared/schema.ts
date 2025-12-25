@@ -57,10 +57,18 @@ export const gstReturnsRelations = relations(gstReturns, ({ one }) => ({
   }),
 }));
 
+// Add the .extend block to include the verification fields
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
+}).extend({
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  otp: z.string().optional(),
+  adminEmail: z.string().optional(),
+  adminOtp: z.string().optional(),
 });
+
+// This line ensures the 'RegisterData' used in Login.tsx now recognizes adminOtp
 
 export const insertClientSchema = createInsertSchema(clients).omit({
   id: true,
@@ -85,3 +93,4 @@ export type InsertClient = z.infer<typeof insertClientSchema>;
 export type GstReturn = typeof gstReturns.$inferSelect;
 export type InsertGstReturn = z.infer<typeof insertGstReturnSchema>;
 export type UpdateGstReturn = z.infer<typeof updateGstReturnSchema>;
+export type RegisterData = z.infer<typeof insertUserSchema>;

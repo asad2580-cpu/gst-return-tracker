@@ -28,6 +28,7 @@ type RegisterData = {
   name: string;
   role: "admin" | "staff";
   adminEmail?: string;
+  adminOtp?: string;
   otp?: string;
 };
 

@@ -48,69 +48,82 @@ router.use(cookieParser());
 // REGISTER
 router.post("/register", async (req: Request, res: Response) => {
   try {
-    const { email, password, name, role, adminEmail, otp } = req.body;
+    const { email, password, name, role, adminEmail, otp, adminOtp } = req.body;
+    const now = Date.now();
 
     // 1. Basic Validation
     if (!email || !password || password.length < 8) {
-      return res.status(400).json({ error: "Invalid input: Email and 8-char password required" });
-    }
-    if (!["admin", "staff"].includes(role)) {
-      return res.status(400).json({ error: "Invalid role" });
+      return res.status(400).json({ error: "Email and 8-character password required." });
     }
 
-    // 2. Email Availability Check
-    const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
-    if (existing) return res.status(409).json({ error: "Email already exists" });
-
+    // 2. Role-Based Verification Logic
     let createdBy: number | null = null;
+    const normalizedEmail = email.toLowerCase().trim();
 
-    // 3. OTP & Role Specific Logic
     if (role === "admin") {
-      // ADMINS verify their OWN email
-      const normalizedEmail = email.toLowerCase().trim();
-      const record = db.prepare("SELECT otp, expires FROM otp_codes WHERE admin_email = ?")
-                       .get(normalizedEmail) as any;
+      // --- ADMIN PATH: Identity Verification Only ---
+      const identityProof = db.prepare(
+        "SELECT otp, expires_at FROM otp_codes WHERE email = ? AND type = 'identity'"
+      ).get(normalizedEmail) as any;
 
-      if (!record || String(record.otp) !== String(otp) || Date.now() > record.expires) {
-        return res.status(400).json({ error: "Invalid or expired OTP code" });
+      if (!identityProof || String(identityProof.otp) !== String(otp) || now > identityProof.expires_at) {
+        return res.status(400).json({ error: "Invalid or expired Identity OTP." });
       }
-      db.prepare("DELETE FROM otp_codes WHERE admin_email = ?").run(normalizedEmail);
+      // Clean up
+      db.prepare("DELETE FROM otp_codes WHERE email = ? AND type = 'identity'").run(normalizedEmail);
 
     } else if (role === "staff") {
-      // STAFF verify using the code sent to their MANAGER'S email
-      if (!adminEmail || !otp) {
-        return res.status(400).json({ error: "Admin Email and OTP are required for staff registration" });
+      // --- STAFF PATH: Identity AND Authorization (Dual-Key) ---
+      if (!adminEmail || !adminOtp) {
+        return res.status(400).json({ error: "Staff registration requires Admin email and Admin OTP." });
       }
       const normalizedAdminEmail = adminEmail.toLowerCase().trim();
-      
-      const record = db.prepare("SELECT otp, expires FROM otp_codes WHERE admin_email = ?")
-                       .get(normalizedAdminEmail) as any;
 
-      if (!record || String(record.otp) !== String(otp) || Date.now() > record.expires) {
-        return res.status(400).json({ error: "Invalid or expired OTP. Verify with your Manager." });
+      // Check Key 1: Staff's own Identity
+      const identityProof = db.prepare(
+        "SELECT otp, expires_at FROM otp_codes WHERE email = ? AND type = 'identity'"
+      ).get(normalizedEmail) as any;
+
+      if (!identityProof || String(identityProof.otp) !== String(otp) || now > identityProof.expires_at) {
+        return res.status(400).json({ error: "Your identity OTP is invalid or expired." });
       }
 
-      const adminRow = db.prepare("SELECT id, role FROM users WHERE email = ?").get(normalizedAdminEmail) as any;
-      if (!adminRow || adminRow.role !== "admin") {
-        return res.status(400).json({ error: "The provided Admin Email does not belong to an Admin" });
+      // Check Key 2: Admin's Authorization
+      const authProof = db.prepare(
+        "SELECT otp, expires_at FROM otp_codes WHERE email = ? AND type = 'authorization'"
+      ).get(normalizedAdminEmail) as any;
+
+      if (!authProof || String(authProof.otp) !== String(adminOtp) || now > authProof.expires_at) {
+        return res.status(400).json({ error: "The Admin Authorization OTP is invalid or expired." });
+      }
+
+      // Verify the Admin exists and is actually an Admin
+      const adminUser = db.prepare("SELECT id FROM users WHERE email = ? AND role = 'admin'").get(normalizedAdminEmail) as any;
+      if (!adminUser) {
+        return res.status(400).json({ error: "The provided Admin email is not registered as an Admin." });
       }
       
-      createdBy = adminRow.id;
-      db.prepare("DELETE FROM otp_codes WHERE admin_email = ?").run(normalizedAdminEmail);
+      createdBy = adminUser.id;
+
+      // Clean up both codes
+      db.prepare("DELETE FROM otp_codes WHERE email = ? AND type = 'identity'").run(normalizedEmail);
+      db.prepare("DELETE FROM otp_codes WHERE email = ? AND type = 'authorization'").run(normalizedAdminEmail);
     }
 
-    // 4. Create User
+    // 3. User Creation (The Final Gate)
+    const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(normalizedEmail);
+    if (existing) return res.status(409).json({ error: "This email is already registered." });
+
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
-    const info = db
-      .prepare("INSERT INTO users (email, password_hash, name, role, created_by) VALUES (?, ?, ?, ?, ?)")
-      .run(email, hash, name || null, role, createdBy);
+    const info = db.prepare(
+      "INSERT INTO users (email, password_hash, name, role, created_by) VALUES (?, ?, ?, ?, ?)"
+    ).run(normalizedEmail, hash, name || null, role, createdBy);
 
-    const user = { id: info.lastInsertRowid, email, name, role, created_by: createdBy };
-
-    // 5. Generate Tokens
+    const user = { id: info.lastInsertRowid, email: normalizedEmail, name, role, created_by: createdBy };
     const access = signAccess({ sub: user.id });
     const refresh = signRefresh({ sub: user.id });
 
+    // Set Refresh Cookie
     res.cookie("refreshToken", refresh, {
       httpOnly: true,
       maxAge: REFRESH_EXPIRES_SECONDS * 1000,
@@ -122,7 +135,7 @@ router.post("/register", async (req: Request, res: Response) => {
     return res.status(201).json({ user, accessToken: access });
   } catch (err) {
     console.error("Registration Error:", err);
-    return res.status(500).json({ error: "Internal server error during registration" });
+    return res.status(500).json({ error: "Server error during registration." });
   }
 });
 
@@ -179,6 +192,54 @@ router.post("/refresh", (req: Request, res: Response) => {
     return res.json({ accessToken: newAccess });
   } catch (err) {
     return res.status(401).json({ error: "Invalid refresh token" });
+  }
+});
+
+// server/auth.ts
+
+router.post("/google-login", async (req: Request, res: Response) => {
+  try {
+    const { email, name } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    // 1. Fetch the FULL user record including role
+    let user = db.prepare("SELECT id, email, name, role, created_by FROM users WHERE email = ?").get(email) as any;
+
+    if (!user) {
+      // 2. If they truly don't exist, create them as admin (first time)
+      const dummyHash = await bcrypt.hash(Math.random().toString(36), 10);
+      const info = db.prepare(
+        "INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)"
+      ).run(email, dummyHash, name || "New Admin", "admin");
+
+      user = { id: info.lastInsertRowid, email, name, role: "admin", created_by: null };
+    }
+
+    // 3. IMPORTANT: Explicitly structure the user object for the frontend
+    const userPayload = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role, // This ensures it doesn't show as 'unknown'
+      created_by: user.created_by
+    };
+
+    const access = signAccess({ sub: user.id });
+    const refresh = signRefresh({ sub: user.id });
+
+    res.cookie("refreshToken", refresh, {
+      httpOnly: true,
+      maxAge: REFRESH_EXPIRES_SECONDS * 1000,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/api/auth/refresh",
+    });
+
+    // Send back the full structured payload
+    return res.json({ user: userPayload, accessToken: access });
+  } catch (err) {
+    console.error("Google Auth Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 

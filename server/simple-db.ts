@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const db: any = new Database(path.join(__dirname, "app.db"));
 db.exec("PRAGMA foreign_keys = ON");
 
-// 1. Users Table (Added Foreign Key for created_by)
+// 1. Users Table
 db.prepare(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,7 +22,7 @@ db.prepare(`
   );
 `).run();
 
-// 2. Clients Table (Merged with GST credentials and remarks)
+// 2. Clients Table
 db.prepare(`
   CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +37,7 @@ db.prepare(`
   );
 `).run();
 
-// 3. GST Returns Table (Merged with status and unique constraint)
+// 3. GST Returns Table
 db.prepare(`
   CREATE TABLE IF NOT EXISTS gstReturns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,13 +53,22 @@ db.prepare(`
   );
 `).run();
 
-// server/simple-db.ts
-db.prepare(`
+// 4. OTP Codes Table (Clean & Unified)
+// 4. OTP Codes Table (Clean & Unified)
+// Using a single backtick string for the entire block
+db.exec(`
   CREATE TABLE IF NOT EXISTS otp_codes (
-    admin_email TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
     otp TEXT NOT NULL,
-    expires INTEGER NOT NULL
+    type TEXT NOT NULL, 
+    expires_at INTEGER NOT NULL,
+    attempt_count INTEGER DEFAULT 0,
+    last_sent_at INTEGER NOT NULL,
+    UNIQUE(email, type)
   );
-`).run();
+`);
+
+console.log("✅ Database initialized and OTP table locked.");
 
 export default db;
