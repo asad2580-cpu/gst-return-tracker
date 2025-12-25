@@ -1,32 +1,28 @@
-// server/db.ts
-// Support two modes:
-// 1) If DATABASE_URL is present -> use Postgres + drizzle (original behavior).
-// 2) If no DATABASE_URL -> fallback to local simple-db (better-sqlite3) for dev/testing.
-
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import * as schema from "@shared/schema";
+import dotenv from "dotenv";
 
-// static imports (no require / top-level await)
-import pg from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-// import local fallback DB (works with TS -> ESM output)
-import simpleDbModule from "./simple-db";
+// Load environment variables from .env
+dotenv.config();
 
-let pool: any = undefined;
-let db: any = undefined;
-
-if (process.env.DATABASE_URL) {
-  // Use Postgres + drizzle when DATABASE_URL is set
-  const { Pool } = pg as any;
-  pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  db = drizzle(pool, { schema });
-  console.log("Using Postgres via DATABASE_URL");
-} else {
-  // Fallback to local sqlite simple-db
-  // simpleDbModule may be the default export or the module object depending on transpile
-  const simpleDb = (simpleDbModule && (simpleDbModule as any).default) ?? simpleDbModule;
-  db = simpleDb;
-  console.warn("DATABASE_URL not set — using local simple-db (SQLite) for development.");
+if (!process.env.DATABASE_URL) {
+  throw new Error("❌ DATABASE_URL is missing! Please add it to your .env file.");
 }
 
-export { pool, db };
-export default { pool, db } as const;
+/**
+ * 1. The Connection Client
+ * 'postgres-js' is the recommended driver for Neon/Serverless Postgres.
+ */
+const client = postgres(process.env.DATABASE_URL);
+
+/**
+ * 2. The Drizzle Instance
+ * This is what you will import in your routes to talk to the DB.
+ */
+export const db = drizzle(client, { schema });
+
+// Export the client if you ever need to close the connection manually (rarely used)
+export { client };
+
+console.log("🐘 Connected to Neon PostgreSQL");

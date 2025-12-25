@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, serial, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, timestamp, pgEnum, uuid, integer, AnyPgColumn } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -7,21 +7,33 @@ import { z } from "zod";
 export const roleEnum = pgEnum('role', ['admin', 'staff']);
 export const gstStatusEnum = pgEnum('gst_status', ['Pending', 'Filed', 'Late']);
 
+export const otpCodes = pgTable("otp_codes", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull(),
+  otp: text("otp").notNull(),
+  type: text("type").notNull(), // 'identity' or 'authorization'
+  expiresAt: timestamp("expires_at").notNull(),
+  attemptCount: integer("attempt_count").default(0),
+  lastSentAt: timestamp("last_sent_at").notNull(),
+});
+
 export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Use uuid for industry-standard unique IDs in Postgres
+  id: uuid("id").primaryKey().defaultRandom(), 
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
-  name: varchar("name", { length: 255 }).notNull(),
-  email: varchar("email", { length: 255 }).notNull().unique(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
   role: roleEnum("role").notNull().default('staff'),
+  createdBy: uuid("created_by").references((): any => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const clients = pgTable("clients", {
-  id: text("id").primaryKey().notNull().$defaultFn(() => crypto.randomUUID()),
+  id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   gstin: text("gstin").notNull().unique(),
-  assignedToId: text("assigned_to_id").references(() => users.id, { onDelete: "set null" }),
+  assignedToId: uuid("assigned_to_id").references(() => users.id, { onDelete: "set null" }),
   gstUsername: text("gst_username"),
   gstPassword: text("gst_password"),
   remarks: text("remarks"),
@@ -29,8 +41,15 @@ export const clients = pgTable("clients", {
 });
 
 export const gstReturns = pgTable("gst_returns", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  clientId: varchar("client_id").references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  // 1. Use uuid() to match the rest of your app
+  id: uuid("id").primaryKey().defaultRandom(),
+  
+  // 2. CHANGE THIS from varchar() to uuid() 
+  // It must match clients.id exactly!
+  clientId: uuid("client_id")
+    .references(() => clients.id, { onDelete: 'cascade' })
+    .notNull(),
+    
   month: varchar("month", { length: 7 }).notNull(),
   gstr1: gstStatusEnum("gstr1").notNull().default('Pending'),
   gstr3b: gstStatusEnum("gstr3b").notNull().default('Pending'),
@@ -88,10 +107,26 @@ export const updateGstReturnSchema = z.object({
 
 export const assignmentLogs = pgTable("assignment_logs", {
   id: serial("id").primaryKey(),
-  clientId: text("client_id").references(() => clients.id, { onDelete: 'cascade' }).notNull(),
-  fromStaffId: text("from_staff_id").references(() => users.id), // Nullable for first assignment
-  toStaffId: text("to_staff_id").references(() => users.id).notNull(),
-  adminId: text("admin_id").references(() => users.id).notNull(), // The admin who made the change
+  
+  // 1. CHANGE THIS from text() to uuid()
+  clientId: uuid("client_id")
+    .references(() => clients.id, { onDelete: 'cascade' })
+    .notNull(),
+    
+  // 2. CHANGE THIS from text() to uuid()
+  fromStaffId: uuid("from_staff_id")
+    .references(() => users.id), 
+    
+  // 3. CHANGE THIS from text() to uuid()
+  toStaffId: uuid("to_staff_id")
+    .references(() => users.id)
+    .notNull(),
+    
+  // 4. CHANGE THIS from text() to uuid()
+  adminId: uuid("admin_id")
+    .references(() => users.id)
+    .notNull(),
+    
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -115,7 +150,10 @@ export const assignmentLogsRelations = relations(assignmentLogs, ({ one }) => ({
     fields: [assignmentLogs.adminId],
     references: [users.id],
   }),
+  
 }));
+
+
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
