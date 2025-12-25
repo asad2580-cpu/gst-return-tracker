@@ -287,28 +287,32 @@ app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
 app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any) => {
   try {
     const { name, gstin, assignedToId, gstUsername, gstPassword, remarks } = req.body;
+    const clientId = req.params.id;
     
-    // Check if client exists
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
+    // 1. Check if client exists
+    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
     if (!client) {
       return res.status(404).json("Client not found");
     }
 
-    // If GSTIN is being changed, validate it
+    // 2. Logic: Determine if a reassignment is happening
+    // We check if assignedToId is provided AND if it's different from current
+    const isReassigning = assignedToId !== undefined && assignedToId !== client.assignedToId;
+
+    // 3. GSTIN Validation logic (Your existing code)
     if (gstin && gstin !== client.gstin) {
       const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
       if (!gstinRegex.test(gstin.toUpperCase())) {
         return res.status(400).json("Invalid GSTIN format");
       }
 
-      // Check if new GSTIN already exists
-      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ? AND id != ?").get(gstin, req.params.id);
+      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ? AND id != ?").get(gstin, clientId);
       if (existingClient) {
         return res.status(400).json("A client with this GSTIN already exists");
       }
     }
 
-    // Update client
+    // 4. Perform the Update (Your existing code)
     db.prepare(
       `UPDATE clients 
        SET name = ?, gstin = ?, assignedToId = ?, gstUsername = ?, gstPassword = ?, remarks = ?
@@ -320,11 +324,25 @@ app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any
       gstUsername !== undefined ? gstUsername : client.gstUsername,
       gstPassword !== undefined ? gstPassword : client.gstPassword,
       remarks !== undefined ? remarks : client.remarks,
-      req.params.id
+      clientId
     );
 
-    const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(req.params.id);
+    // 5. NEW: Record the History Log if reassigned
+    if (isReassigning) {
+      db.prepare(`
+        INSERT INTO assignment_logs (clientId, fromStaffId, toStaffId, adminId)
+        VALUES (?, ?, ?, ?)
+      `).run(
+        clientId, 
+        client.assignedToId, // Old Staff ID
+        assignedToId,        // New Staff ID
+        req.user.id          // Admin ID from auth middleware
+      );
+    }
+
+    // 6. Return updated data (Your existing code)
+    const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
+    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(clientId);
     
     res.json({ ...updatedClient, returns });
   } catch (error) {
@@ -357,6 +375,37 @@ app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any
       next(error);
     }
   });
+
+  app.get("/api/clients/:id/history", async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ message: "Unauthorized" });
+  }
+
+  const clientId = req.params.id;
+
+  try {
+    // We JOIN with the users table THREE times: 
+    // Once for 'From' staff, once for 'To' staff, and once for the 'Admin'
+    const history = db.prepare(`
+      SELECT 
+        l.id,
+        l.created_at as timestamp,
+        u1.name as fromStaffName,
+        u2.name as toStaffName,
+        u3.name as adminName
+      FROM assignment_logs l
+      LEFT JOIN users u1 ON l.fromStaffId = u1.id
+      JOIN users u2 ON l.toStaffId = u2.id
+      JOIN users u3 ON l.adminId = u3.id
+      WHERE l.clientId = ?
+      ORDER BY l.created_at DESC
+    `).all(clientId);
+
+    res.json(history);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch history" });
+  }
+});
 
   // Get returns for a specific client
   app.get("/api/clients/:clientId/returns", requireAuth, async (req: any, res: any, next: any) => {

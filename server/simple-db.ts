@@ -51,7 +51,26 @@ db.prepare(`
     UNIQUE(clientId, month),
     FOREIGN KEY (clientId) REFERENCES clients(id) ON DELETE CASCADE
   );
+  
+  
 `).run();
+
+// 5. Assignment Logs Table
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS assignment_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clientId TEXT NOT NULL,
+    fromStaffId TEXT,
+    toStaffId TEXT NOT NULL,
+    adminId TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (clientId) REFERENCES clients(id) ON DELETE CASCADE,
+    FOREIGN KEY (fromStaffId) REFERENCES users(id),
+    FOREIGN KEY (toStaffId) REFERENCES users(id),
+    FOREIGN KEY (adminId) REFERENCES users(id)
+  );
+`).run();
+
 
 // 4. OTP Codes Table (Clean & Unified)
 // 4. OTP Codes Table (Clean & Unified)

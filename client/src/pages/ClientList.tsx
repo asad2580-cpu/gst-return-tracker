@@ -227,34 +227,36 @@ export default function ClientList() {
   });
 
   const editClientMutation = useMutation({
-    mutationFn: async (clientData: ClientWithReturns) => {
-      const res = await apiRequest("PATCH", `/api/clients/${clientData.id}`, {
-        name: clientData.name,
-        gstin: clientData.gstin,
-        assignedToId: clientData.assignedToId,
-        gstUsername: clientData.gstUsername,
-        gstPassword: clientData.gstPassword,
-        remarks: clientData.remarks,
-      });
-      return res;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      setIsEditDialogOpen(false);
-      setEditingClient(null);
-      toast({
-        title: "Client updated",
-        description: "Client details have been updated successfully.",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Failed to update client",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  mutationFn: async (clientData: ClientWithReturns) => {
+    const res = await apiRequest("PATCH", `/api/clients/${clientData.id}`, {
+      name: clientData.name,
+      gstin: clientData.gstin,
+      assignedToId: clientData.assignedToId,
+      gstUsername: clientData.gstUsername,
+      gstPassword: clientData.gstPassword,
+      remarks: clientData.remarks,
+    });
+    // We return the id so we can use it in onSuccess
+    return { id: clientData.id };
+  },
+  onSuccess: (data) => {
+    // 1. Refresh the main list (Already there)
+    queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+
+    // 2. Refresh the specific history for this client
+    queryClient.invalidateQueries({ 
+      queryKey: [`/api/clients/${data.id}/history`] 
+    });
+
+    setIsEditDialogOpen(false);
+    setEditingClient(null);
+    toast({
+      title: "Client updated",
+      description: "Client details and reassignment history updated.",
+    });
+  },
+  // ... onError remains same
+});
 
   
 

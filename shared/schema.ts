@@ -86,6 +86,37 @@ export const updateGstReturnSchema = z.object({
   gstr3b: z.enum(['Pending', 'Filed', 'Late']).optional(),
 });
 
+export const assignmentLogs = pgTable("assignment_logs", {
+  id: serial("id").primaryKey(),
+  clientId: text("client_id").references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  fromStaffId: text("from_staff_id").references(() => users.id), // Nullable for first assignment
+  toStaffId: text("to_staff_id").references(() => users.id).notNull(),
+  adminId: text("admin_id").references(() => users.id).notNull(), // The admin who made the change
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// 2. Define the relations so Drizzle knows how to join these tables
+export const assignmentLogsRelations = relations(assignmentLogs, ({ one }) => ({
+  client: one(clients, {
+    fields: [assignmentLogs.clientId],
+    references: [clients.id],
+  }),
+  fromStaff: one(users, {
+    fields: [assignmentLogs.fromStaffId],
+    references: [users.id],
+    relationName: "fromStaff",
+  }),
+  toStaff: one(users, {
+    fields: [assignmentLogs.toStaffId],
+    references: [users.id],
+    relationName: "toStaff",
+  }),
+  admin: one(users, {
+    fields: [assignmentLogs.adminId],
+    references: [users.id],
+  }),
+}));
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Client = typeof clients.$inferSelect;
@@ -94,3 +125,4 @@ export type GstReturn = typeof gstReturns.$inferSelect;
 export type InsertGstReturn = z.infer<typeof insertGstReturnSchema>;
 export type UpdateGstReturn = z.infer<typeof updateGstReturnSchema>;
 export type RegisterData = z.infer<typeof insertUserSchema>;
+export type AssignmentLog = typeof assignmentLogs.$inferSelect;
