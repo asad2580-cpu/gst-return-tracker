@@ -1,18 +1,20 @@
+import express, { type Express, Request, Response, NextFunction, Router } from "express";
+import { createServer, type Server } from "http";
+import * as dotenv from 'dotenv';
+import { Resend } from 'resend';
+
+// Database & Schema
 import { db } from "./db";
 import { users, clients, gstReturns, otpCodes, assignmentLogs } from "@shared/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
-import { Resend } from 'resend';
-import { tempOTPs } from "./otp-store"; // Remove the local tempOTPs variable you added earlier
-import * as dotenv from 'dotenv';
-import express from "express";
-import type { Express, Request, Response, NextFunction } from "express";
-import { createServer, type Server } from "http";
-import { setupAuth } from "./auth";
-import { attachUserFromHeader } from "./auth";
-import { Router } from "express";
+
+// Drizzle ORM Helpers
+import { eq, and, ne, desc, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+
+// Auth Middleware
+import { setupAuth, attachUserFromHeader } from "./auth";
 
 dotenv.config(); 
-
 // 2. Initialize Resend correctly
 // Use only ONE declaration for resend
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -84,60 +86,105 @@ app.post("/api/verify-admin", async (req, res) => {
   if (!adminEmail) return res.status(400).send("Admin email is required");
 
   const normalizedAdminEmail = adminEmail.toLowerCase().trim();
-  const admin = db.prepare("SELECT id FROM users WHERE email = ? AND role = 'admin'").get(normalizedAdminEmail);
-  
-  if (!admin) return res.status(404).send("No administrator found.");
-
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = Date.now() + 10 * 60 * 1000;
-
-  // USE THE NEW SCHEMA COLUMNS: email, type, expires_at
-  db.prepare(`
-    INSERT OR REPLACE INTO otp_codes (email, otp, type, expires_at, attempt_count, last_sent_at) 
-    VALUES (?, ?, 'authorization', ?, 0, ?)
-  `).run(normalizedAdminEmail, otp, expiresAt, Date.now());
 
   try {
+    // 1. Check if Admin exists using Drizzle select
+    const results = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        and(
+          eq(users.email, normalizedAdminEmail),
+          eq(users.role, 'admin')
+        )
+      )
+      .limit(1);
+
+    const admin = results[0];
+    if (!admin) return res.status(404).send("No administrator found.");
+
+    // 2. Generate OTP and Expiry
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // Now a Date object
+
+    // 3. PostgreSQL Upsert (Insert or Update on Conflict)
+    // Note: This requires a unique constraint on (email, type) in your schema.ts
+    await db.insert(otpCodes)
+      .values({
+        email: normalizedAdminEmail,
+        otp: otp,
+        type: 'authorization',
+        expiresAt: expiresAt,
+        attemptCount: 0,
+        lastSentAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [otpCodes.email, otpCodes.type],
+        set: {
+          otp: otp,
+          expiresAt: expiresAt,
+          attemptCount: 0,
+          lastSentAt: new Date(),
+        },
+      });
+
+    // 4. Send Email
     await resend.emails.send({
-      from: 'GST Pro <onboarding@resend.dev>',
+      from: 'fileDX <onboarding@resend.dev>',
       to: normalizedAdminEmail,
       subject: 'Staff Registration OTP',
       html: `<p>A staff member is registering. Provide them this code: <strong>${otp}</strong></p>`,
     });
-    
-    console.log(`--- OTP [${otp}] saved to DB for Admin [${normalizedAdminEmail}] ---`);
+
+    console.log(`--- OTP [${otp}] saved to Postgres for Admin [${normalizedAdminEmail}] ---`);
     res.json({ message: "OTP sent to your Admin's email." });
+
   } catch (error) {
-    res.status(500).send("Failed to send email via Resend.");
+    console.error("Verify Admin Error:", error);
+    res.status(500).send("Failed to process request.");
   }
 });
 
   // Get all clients (admin sees all, staff sees only assigned)
   app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
-    try {
-      const user = req.user;
-      let clientsList;
-      
-      if (user.role === 'admin') {
-        // Admin sees ALL clients
-        clientsList = db.prepare("SELECT * FROM clients").all();
-      } else {
-        // Staff only sees their assigned clients
-        clientsList = db.prepare("SELECT * FROM clients WHERE assignedToId = ?").all(user.id);
-      }
+  try {
+    const user = req.user;
+    let clientsList;
 
-      // Get returns for each client
-      const clientsWithReturns = clientsList.map((client: any) => {
-        const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
-        return { ...client, returns };
-      });
-
-      res.json(clientsWithReturns);
-    } catch (error) {
-      console.error("Error fetching clients:", error);
-      next(error);
+    // 1. Fetch the list of clients based on Role
+    if (user.role === 'admin') {
+      // Admin sees ALL clients
+      clientsList = await db.select().from(clients);
+    } else {
+      // Staff only sees their assigned clients
+      clientsList = await db
+        .select()
+        .from(clients)
+        .where(eq(clients.assignedToId, user.id));
     }
-  });
+
+    // 2. Fetch returns for each client
+    // Since we use 'await', we use Promise.all to run these in parallel
+    const clientsWithReturns = await Promise.all(
+      clientsList.map(async (client) => {
+        const returns = await db
+          .select()
+          .from(gstReturns)
+          .where(eq(gstReturns.clientId, client.id));
+          
+        return { 
+          ...client, 
+          returns 
+        };
+      })
+    );
+
+    res.json(clientsWithReturns);
+  } catch (error) {
+    console.error("Error fetching clients:", error);
+    next(error);
+  }
+});
 
   // Create a new client (admin only)
   // Create a new client (admin only)
@@ -145,60 +192,69 @@ app.post("/api/clients", requireAdmin, async (req, res, next) => {
   try {
     const { name, gstin, assignedToId, gstUsername, gstPassword, remarks, previousReturns } = req.body;
     
-    // Validate required inputs
+    // 1. Validation
     if (!name || !gstin || !assignedToId) {
       return res.status(400).json("Missing required fields: name, gstin, or assignedToId");
     }
 
-    // Validate GSTIN format
     const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
     if (!gstinRegex.test(gstin.toUpperCase())) {
       return res.status(400).json("Invalid GSTIN format");
     }
 
-    // Check if GSTIN already exists
-    const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ?").get(gstin);
-    if (existingClient) {
+    // 2. Check existing GSTIN (Asynchronous)
+    const existing = await db.select().from(clients).where(eq(clients.gstin, gstin.toUpperCase())).limit(1);
+    if (existing[0]) {
       return res.status(400).json("A client with this GSTIN already exists");
     }
 
-    // Insert new client with all fields
-    const result = db.prepare(
-      `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+    // 3. Start Transaction
+    const finalData = await db.transaction(async (tx) => {
+      // Insert Client and get the new record back immediately with .returning()
+      const [newClient] = await tx.insert(clients).values({
+        name,
+        gstin: gstin.toUpperCase(),
+        assignedToId,
+        gstUsername: gstUsername || null,
+        gstPassword: gstPassword || null,
+        remarks: remarks || null,
+      }).returning();
 
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(result.lastInsertRowid);
+      // Logic for generating months
+      const currentDate = new Date();
+      const returnPeriodDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+      const currentReturnPeriodStr = `${returnPeriodDate.getFullYear()}-${String(returnPeriodDate.getMonth() + 1).padStart(2, '0')}`;
+      
+      const months = [];
+      for (let i = 0; i < 3; i++) {
+        const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+        months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+      }
 
-    // Create returns for last 3 months
-      // Create returns for last 3 months
-const currentDate = new Date();
-// Current return period is the previous month (GST returns are filed for previous month)
-const returnPeriodDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-const currentReturnPeriod = `${returnPeriodDate.getFullYear()}-${String(returnPeriodDate.getMonth() + 1).padStart(2, '0')}`;
-const months = [];
-for (let i = 0; i < 3; i++) {
-  const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-  months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-}
+      // Insert Returns
+      for (const month of months) {
+        let status: "Pending" | "Filed" | "Late" = 'Pending';
+        if (previousReturns === 'mark_all_previous') {
+          const [y, m] = month.split('-').map(Number);
+          const [cy, cm] = currentReturnPeriodStr.split('-').map(Number);
+          if (new Date(y, m - 1) < new Date(cy, cm - 1)) status = 'Filed';
+        }
 
-for (const month of months) {
-  // Determine status: if previousReturns is "mark_all_previous" and month is before current return period, mark as Filed
-  let status = 'Pending';
-  if (previousReturns === 'mark_all_previous') {
-  const [y, m] = month.split('-').map(Number);
-  const [cy, cm] = currentReturnPeriod.split('-').map(Number);
-  const monthDate = new Date(y, m - 1);
-  const currentDate = new Date(cy, cm - 1);
-  if (monthDate < currentDate) status = 'Filed';
-}
-  db.prepare(
-    "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, ?, ?)"
-  ).run(client.id, month, status, status);
-}
+        await tx.insert(gstReturns).values({
+          clientId: newClient.id,
+          month,
+          gstr1: status,
+          gstr3b: status,
+        });
+      }
 
-    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(client.id);
-    res.status(201).json({ ...client, returns });
+      // Fetch the newly created returns to return to the frontend
+      const returns = await tx.select().from(gstReturns).where(eq(gstReturns.clientId, newClient.id));
+      
+      return { ...newClient, returns };
+    });
+
+    res.status(201).json(finalData);
   } catch (error) {
     console.error("Error creating client:", error);
     next(error);
@@ -208,37 +264,37 @@ for (const month of months) {
 // Bulk Create Clients (Admin only)
 app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
   try {
-    const clients = req.body; // Expecting an array of client objects
-    if (!Array.isArray(clients)) {
+    const clientsData = req.body; 
+    if (!Array.isArray(clientsData)) {
       return res.status(400).json("Data must be an array of clients");
     }
 
-    // 1. Fetch all staff to map Email -> ID (assuming Excel uses email to identify staff)
-    // 1. Fetch all staff and normalize their emails for a perfect match
-    const staffRows = db.prepare("SELECT id, email FROM users WHERE role = 'staff'").all() as {id: number, email: string}[];
+    // 1. Fetch all staff to map Email -> ID (Drizzle Async)
+    const staffRows = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.role, 'staff'));
     
-    // We create a Map where keys are lowercase and trimmed: ' admin@gmail.com ' becomes 'admin@gmail.com'
     const staffMap = new Map(staffRows.map(s => [s.email.toLowerCase().trim(), s.id]));
 
-    // 2. Prepare the GSTIN regex
+    // 2. Prepare GSTIN regex
     const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
-    // 3. START TRANSACTION
-    const runTransaction = db.transaction((clientData: BulkClientInput[]) => {
+    // 3. START POSTGRES TRANSACTION
+    // In Drizzle, we use await db.transaction(async (tx) => { ... })
+    const insertedIds = await db.transaction(async (tx) => {
       const results = [];
 
-      for (const item of clientData) {
-        // Clean the incoming Excel data
+      for (const item of clientsData) {
         const name = item.name;
         const gstin = item.gstin?.toUpperCase().trim();
         const staffEmail = item.staffEmail?.toLowerCase().trim();
         const { gstUsername, gstPassword, remarks } = item;
 
-        // Validation: Look up the ID using the cleaned email
+        // Validation
         const assignedToId = staffMap.get(staffEmail);
-        
         if (!assignedToId) {
-          throw new Error(`Staff email "${item.staffEmail}" not found. Please ensure this staff exists in the Staff Management tab.`);
+          throw new Error(`Staff email "${item.staffEmail}" not found. Please ensure this staff exists.`);
         }
 
         if (!gstin || !gstinRegex.test(gstin)) {
@@ -246,27 +302,40 @@ app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
         }
 
         // Check for existing GSTIN
-        const existing = db.prepare("SELECT name FROM clients WHERE gstin = ?").get(gstin);
-        if (existing) {
-          throw new Error(`GSTIN ${gstin} is already assigned to "${existing.name}"`);
+        const existing = await tx
+          .select({ name: clients.name })
+          .from(clients)
+          .where(eq(clients.gstin, gstin))
+          .limit(1);
+
+        if (existing[0]) {
+          throw new Error(`GSTIN ${gstin} is already assigned to "${existing[0].name}"`);
         }
 
-        // Insert Client
-        const result = db.prepare(
-          `INSERT INTO clients (name, gstin, assignedToId, gstUsername, gstPassword, remarks) 
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(name, gstin, assignedToId, gstUsername || null, gstPassword || null, remarks || null);
+        // Insert Client and get ID
+        const [newClient] = await tx.insert(clients).values({
+          name,
+          gstin,
+          assignedToId,
+          gstUsername: gstUsername || null,
+          gstPassword: gstPassword || null,
+          remarks: remarks || null,
+        }).returning({ id: clients.id });
 
-        const clientId = result.lastInsertRowid;
+        const clientId = newClient.id;
 
         // Generate 3 months of returns
         const currentDate = new Date();
         for (let i = 0; i < 3; i++) {
           const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
           const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-          db.prepare(
-            "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
-          ).run(clientId, month);
+          
+          await tx.insert(gstReturns).values({
+            clientId: clientId,
+            month: month,
+            gstr1: 'Pending',
+            gstr3b: 'Pending'
+          });
         }
         
         results.push(clientId);
@@ -274,111 +343,121 @@ app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
       return results;
     });
 
-    // 4. EXECUTE
-    const insertedIds = runTransaction(clients);
-
     res.status(201).json({ message: `Successfully imported ${insertedIds.length} clients` });
   } catch (error: any) {
     console.error("Bulk import failed:", error);
-    // SQLite transactions automatically rollback if an error is thrown inside
+    // Drizzle transactions automatically rollback if an error is thrown inside
     res.status(400).json({ error: error.message });
   }
 });
 
-// Update client details (admin only)
+// Update client details (admin only) // Add neq to your imports at the top
+
 app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any) => {
   try {
     const { name, gstin, assignedToId, gstUsername, gstPassword, remarks } = req.body;
     const clientId = req.params.id;
     
     // 1. Check if client exists
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
+    const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+    
     if (!client) {
       return res.status(404).json("Client not found");
     }
 
     // 2. Logic: Determine if a reassignment is happening
-    // We check if assignedToId is provided AND if it's different from current
     const isReassigning = assignedToId !== undefined && assignedToId !== client.assignedToId;
 
-    // 3. GSTIN Validation logic (Your existing code)
+    // 3. GSTIN Validation logic
     if (gstin && gstin !== client.gstin) {
       const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
       if (!gstinRegex.test(gstin.toUpperCase())) {
         return res.status(400).json("Invalid GSTIN format");
       }
 
-      const existingClient = db.prepare("SELECT * FROM clients WHERE gstin = ? AND id != ?").get(gstin, clientId);
+      const [existingClient] = await db
+        .select()
+        .from(clients)
+        .where(and(eq(clients.gstin, gstin.toUpperCase()), ne(clients.id, clientId)))
+        .limit(1);
+
       if (existingClient) {
         return res.status(400).json("A client with this GSTIN already exists");
       }
     }
 
-    // 4. Perform the Update (Your existing code)
-    db.prepare(
-      `UPDATE clients 
-       SET name = ?, gstin = ?, assignedToId = ?, gstUsername = ?, gstPassword = ?, remarks = ?
-       WHERE id = ?`
-    ).run(
-      name || client.name,
-      gstin || client.gstin,
-      assignedToId !== undefined ? assignedToId : client.assignedToId,
-      gstUsername !== undefined ? gstUsername : client.gstUsername,
-      gstPassword !== undefined ? gstPassword : client.gstPassword,
-      remarks !== undefined ? remarks : client.remarks,
-      clientId
-    );
+    // 4. Perform the Update and optional Log within a Transaction
+    const updatedData = await db.transaction(async (tx) => {
+      const [updatedClient] = await tx
+        .update(clients)
+        .set({
+          name: name ?? client.name,
+          gstin: gstin ? gstin.toUpperCase() : client.gstin,
+          assignedToId: assignedToId !== undefined ? assignedToId : client.assignedToId,
+          gstUsername: gstUsername !== undefined ? gstUsername : client.gstUsername,
+          gstPassword: gstPassword !== undefined ? gstPassword : client.gstPassword,
+          remarks: remarks !== undefined ? remarks : client.remarks,
+        })
+        .where(eq(clients.id, clientId))
+        .returning();
 
-    // 5. NEW: Record the History Log if reassigned
-    if (isReassigning) {
-      db.prepare(`
-        INSERT INTO assignment_logs (clientId, fromStaffId, toStaffId, adminId)
-        VALUES (?, ?, ?, ?)
-      `).run(
-        clientId, 
-        client.assignedToId, // Old Staff ID
-        assignedToId,        // New Staff ID
-        req.user.id          // Admin ID from auth middleware
-      );
-    }
+      // 5. Record History Log if reassigned
+      if (isReassigning) {
+        await tx.insert(assignmentLogs).values({
+          clientId: clientId,
+          fromStaffId: client.assignedToId, // Old Staff ID
+          toStaffId: assignedToId,         // New Staff ID
+          adminId: req.user.id,            // Admin ID from auth middleware
+        });
+      }
 
-    // 6. Return updated data (Your existing code)
-    const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(clientId);
-    const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(clientId);
-    
-    res.json({ ...updatedClient, returns });
+      // 6. Fetch latest returns to return complete object
+      const returns = await tx
+        .select()
+        .from(gstReturns)
+        .where(eq(gstReturns.clientId, clientId));
+
+      return { ...updatedClient, returns };
+    });
+
+    res.json(updatedData);
   } catch (error) {
     console.error("Error updating client:", error);
     next(error);
   }
 });
 
+    // 6. Return updated data (Your existing code)
+
   // Reassign client to different staff (admin only)
   app.patch("/api/clients/:id/assign", requireAdmin, async (req: any, res: any, next: any) => {
-    try {
-      const { staffId } = req.body;
-      if (!staffId) {
-        return res.status(400).json("staffId is required");
-      }
-
-      // Check if client exists
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-      if (!client) {
-        return res.status(404).json("Client not found");
-      }
-
-      // Update assignment
-      db.prepare("UPDATE clients SET assignedToId = ? WHERE id = ?").run(staffId, req.params.id);
-      const updatedClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
-      
-      res.json(updatedClient);
-    } catch (error) {
-      console.error("Error assigning client:", error);
-      next(error);
+  try {
+    const { staffId } = req.body;
+    if (!staffId) {
+      return res.status(400).json("staffId is required");
     }
-  });
 
-  app.get("/api/clients/:id/history", async (req, res) => {
+    // 1. Perform update and get the result back in one trip
+    const [updatedClient] = await db
+      .update(clients)
+      .set({ assignedToId: staffId })
+      .where(eq(clients.id, req.params.id))
+      .returning();
+
+    // 2. Check if client existed (if no row was returned, the ID was wrong)
+    if (!updatedClient) {
+      return res.status(404).json("Client not found");
+    }
+
+    res.json(updatedClient);
+  } catch (error) {
+    console.error("Error assigning client:", error);
+    next(error);
+  }
+});
+
+
+app.get("/api/clients/:id/history", async (req, res) => {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ message: "Unauthorized" });
   }
@@ -386,89 +465,129 @@ app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any
   const clientId = req.params.id;
 
   try {
-    // We JOIN with the users table THREE times: 
-    // Once for 'From' staff, once for 'To' staff, and once for the 'Admin'
-    const history = db.prepare(`
-      SELECT 
-        l.id,
-        l.created_at as timestamp,
-        u1.name as fromStaffName,
-        u2.name as toStaffName,
-        u3.name as adminName
-      FROM assignment_logs l
-      LEFT JOIN users u1 ON l.fromStaffId = u1.id
-      JOIN users u2 ON l.toStaffId = u2.id
-      JOIN users u3 ON l.adminId = u3.id
-      WHERE l.clientId = ?
-      ORDER BY l.created_at DESC
-    `).all(clientId);
+    // 1. Create Aliases for the Users table
+    const fromStaff = alias(users, "fromStaff");
+    const toStaff = alias(users, "toStaff");
+    const admin = alias(users, "admin");
+
+    // 2. Perform the Triple Join
+    const history = await db
+      .select({
+        id: assignmentLogs.id,
+        timestamp: assignmentLogs.createdAt,
+        fromStaffName: fromStaff.name,
+        toStaffName: toStaff.name,
+        adminName: admin.name,
+      })
+      .from(assignmentLogs)
+      .leftJoin(fromStaff, eq(assignmentLogs.fromStaffId, fromStaff.id))
+      .innerJoin(toStaff, eq(assignmentLogs.toStaffId, toStaff.id))
+      .innerJoin(admin, eq(assignmentLogs.adminId, admin.id))
+      .where(eq(assignmentLogs.clientId, clientId))
+      .orderBy(desc(assignmentLogs.createdAt));
 
     res.json(history);
   } catch (error) {
+    console.error("History Fetch Error:", error);
     res.status(500).json({ message: "Failed to fetch history" });
   }
 });
 
   // Get returns for a specific client
   app.get("/api/clients/:clientId/returns", requireAuth, async (req: any, res: any, next: any) => {
-    try {
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.clientId);
-      if (!client) {
-        return res.status(404).json("Client not found");
-      }
+  try {
+    const { clientId } = req.params;
 
-      const user = req.user;
-      if (user.role !== 'admin' && client.assignedToId !== user.id) {
-        return res.status(403).json("Forbidden: Cannot access other staff's clients");
-      }
+    // 1. Fetch the client to check ownership/existence
+    const [client] = await db
+      .select()
+      .from(clients)
+      .where(eq(clients.id, clientId))
+      .limit(1);
 
-      const returns = db.prepare("SELECT * FROM gstReturns WHERE clientId = ?").all(req.params.clientId);
-      res.json(returns);
-    } catch (error) {
-      console.error("Error fetching returns:", error);
-      next(error);
+    if (!client) {
+      return res.status(404).json("Client not found");
     }
-  });
+
+    // 2. Security Check (Admin or Assigned Staff only)
+    const user = req.user;
+    if (user.role !== 'admin' && client.assignedToId !== user.id) {
+      return res.status(403).json("Forbidden: Cannot access other staff's clients");
+    }
+
+    // 3. Fetch all returns for this client
+    const returnsList = await db
+      .select()
+      .from(gstReturns)
+      .where(eq(gstReturns.clientId, clientId))
+      .orderBy(desc(gstReturns.month)); // Optional: keeps them in order by date
+
+    res.json(returnsList);
+  } catch (error) {
+    console.error("Error fetching returns:", error);
+    next(error);
+  }
+});
 
   // Create a return for a specific month (if it doesn't exist)
   app.post("/api/clients/:clientId/returns", requireAuth, async (req: any, res: any, next: any) => {
-    try {
-      const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.clientId);
-      if (!client) {
-        return res.status(404).json("Client not found");
-      }
+  try {
+    const { clientId } = req.params;
+    const { month } = req.body;
 
-      const user = req.user;
-      if (user.role !== 'admin' && client.assignedToId !== user.id) {
-        return res.status(403).json("Forbidden: Cannot modify other staff's clients");
-      }
-
-      const { month } = req.body;
-      if (!month) {
-        return res.status(400).json("Month is required");
-      }
-
-      // Check if return already exists for this month
-      const existingReturn = db.prepare(
-        "SELECT * FROM gstReturns WHERE clientId = ? AND month = ?"
-      ).get(req.params.clientId, month);
-      
-      if (existingReturn) {
-        return res.json(existingReturn);
-      }
-
-      // Create new return
-      const result = db.prepare(
-        "INSERT INTO gstReturns (clientId, month, gstr1, gstr3b) VALUES (?, ?, 'Pending', 'Pending')"
-      ).run(req.params.clientId, month);
-
-      const gstReturn = db.prepare("SELECT * FROM gstReturns WHERE id = ?").get(result.lastInsertRowid);
-      res.status(201).json(gstReturn);
-    } catch (error) {
-      console.error("Error creating return:", error);
-      next(error);
+    if (!month) {
+      return res.status(400).json("Month is required");
     }
-  });
+
+    // 1. Fetch client and verify permissions
+    const [client] = await db
+      .select()
+      .from(clients)
+      .where(eq(clients.id, clientId))
+      .limit(1);
+
+    if (!client) {
+      return res.status(404).json("Client not found");
+    }
+
+    const user = req.user;
+    if (user.role !== 'admin' && client.assignedToId !== user.id) {
+      return res.status(403).json("Forbidden: Cannot modify other staff's clients");
+    }
+
+    // 2. Check if return already exists for this month
+    const [existingReturn] = await db
+      .select()
+      .from(gstReturns)
+      .where(
+        and(
+          eq(gstReturns.clientId, clientId),
+          eq(gstReturns.month, month)
+        )
+      )
+      .limit(1);
+    
+    if (existingReturn) {
+      return res.json(existingReturn);
+    }
+
+    // 3. Create new return and return it immediately
+    const [newReturn] = await db
+      .insert(gstReturns)
+      .values({
+        clientId: clientId,
+        month: month,
+        gstr1: 'Pending',
+        gstr3b: 'Pending'
+      })
+      .returning();
+
+    res.status(201).json(newReturn);
+  } catch (error) {
+    console.error("Error creating return:", error);
+    next(error);
+  }
+});
 
   // Update return status (GSTR-1 or GSTR-3B)
   // Update return status (GSTR-1 or GSTR-3B) - Admin only with validation rules
@@ -476,28 +595,45 @@ app.patch("/api/clients/:id", requireAdmin, async (req: any, res: any, next: any
 app.patch("/api/returns/:id", requireAdmin, async (req: any, res: any, next: any) => {
   try {
     const { gstr1, gstr3b } = req.body;
-    
-    // Get current return
-    const currentReturn: any = db.prepare("SELECT * FROM gstReturns WHERE id = ?").get(req.params.id);
+    const returnId = req.params.id;
+
+    // 1. Get current return
+    const [currentReturn] = await db
+      .select()
+      .from(gstReturns)
+      .where(eq(gstReturns.id, returnId))
+      .limit(1);
+
     if (!currentReturn) {
       return res.status(404).json("Return not found");
     }
 
-    // Get previous month's return for validation
-    const currentMonth = currentReturn.month;
+    // 2. Logic to calculate the previous month string
+    const currentMonth = currentReturn.month; // e.g., "2024-03"
     const [year, month] = currentMonth.split('-').map(Number);
     const prevDate = new Date(year, month - 2, 1);
-    const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-    const prevReturn: any = db.prepare("SELECT * FROM gstReturns WHERE clientId = ? AND month = ?").get(currentReturn.clientId, prevMonth);
+    const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
 
-    // Validation: Cannot mark as Filed if previous month's GSTR-1 and GSTR-3B are not both Filed
+    // 3. Fetch previous month's return for validation
+    const [prevReturn] = await db
+      .select()
+      .from(gstReturns)
+      .where(
+        and(
+          eq(gstReturns.clientId, currentReturn.clientId),
+          eq(gstReturns.month, prevMonthStr)
+        )
+      )
+      .limit(1);
+
+    // 4. Validation: Sequential Filing Rules
     if (gstr1 === 'Filed' || gstr3b === 'Filed') {
       if (prevReturn && (prevReturn.gstr1 !== 'Filed' || prevReturn.gstr3b !== 'Filed')) {
         return res.status(400).json("Cannot mark as Filed: Previous month's GSTR-1 and GSTR-3B must both be Filed first");
       }
     }
 
-    // Validation: Cannot mark GSTR-3B as Filed until GSTR-1 is Filed
+    // 5. Validation: GSTR-1 must come before GSTR-3B
     if (gstr3b === 'Filed') {
       const gstr1Status = gstr1 !== undefined ? gstr1 : currentReturn.gstr1;
       if (gstr1Status !== 'Filed') {
@@ -505,60 +641,64 @@ app.patch("/api/returns/:id", requireAdmin, async (req: any, res: any, next: any
       }
     }
 
-    // Build update query dynamically based on what fields are provided
-    const updates = [];
-    const values = [];
-    
-    if (gstr1 !== undefined) {
-      updates.push("gstr1 = ?");
-      values.push(gstr1);
-    }
-    if (gstr3b !== undefined) {
-      updates.push("gstr3b = ?");
-      values.push(gstr3b);
-    }
-    
-    if (updates.length === 0) {
+    // 6. Build and Execute Update
+    // Drizzle ignores 'undefined' values in the object, so we only update what's sent
+    const updatePayload: any = {};
+    if (gstr1 !== undefined) updatePayload.gstr1 = gstr1;
+    if (gstr3b !== undefined) updatePayload.gstr3b = gstr3b;
+
+    if (Object.keys(updatePayload).length === 0) {
       return res.status(400).json("No fields to update");
     }
-    
-    // Add return ID to end of values array
-    values.push(req.params.id);
-    
-    // Execute update
-    db.prepare(`UPDATE gstReturns SET ${updates.join(", ")} WHERE id = ?`).run(...values);
-    
-    // Return updated record
-    const gstReturn = db.prepare("SELECT * FROM gstReturns WHERE id = ?").get(req.params.id);
-    
-    res.json(gstReturn);
+
+    const [updatedReturn] = await db
+      .update(gstReturns)
+      .set(updatePayload)
+      .where(eq(gstReturns.id, returnId))
+      .returning();
+
+    res.json(updatedReturn);
   } catch (error) {
     console.error("Error updating return:", error);
     next(error);
   }
 });
 
-// server/routes.ts
-
-// Define backoff intervals in seconds: 1m, 2m, 5m, 10m, 30m
-const BACKOFF_TIMERS = [60, 120, 300, 600, 1800];
-
 // GET only the staff created by the logged-in Admin
-app.get("/api/users", requireAuth, (req: any, res) => {
+app.get("/api/users", requireAuth, async (req: any, res) => {
   const user = req.user;
 
-  if (user.role === 'admin') {
-    // Admins see staff they created
-    const staff = db.prepare(`
-      SELECT id, name, email, role 
-      FROM users 
-      WHERE created_by = ? AND role = 'staff'
-    `).all(user.id);
-    return res.json(staff);
-  } 
+  try {
+    if (user.role === 'admin') {
+      // Admins see staff they created
+      const staff = await db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          role: users.role,
+        })
+        .from(users)
+        .where(
+          and(
+            eq(users.createdBy, user.id),
+            eq(users.role, 'staff')
+          )
+        );
+      return res.json(staff);
+    }
 
-  // Staff members see only themselves (or an empty list depending on your UI)
-  return res.json([user]);
+    // Staff members see only themselves (formatted as an array for UI consistency)
+    return res.json([{
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role
+    }]);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
 });
 
 app.post("/api/otp/request", async (req, res) => {
@@ -573,13 +713,24 @@ app.post("/api/otp/request", async (req, res) => {
     const now = Date.now();
 
     // 1. Check for Throttling (Rate Limiting)
-    const existing = db.prepare(
-      "SELECT * FROM otp_codes WHERE email = ? AND type = ?"
-    ).get(normalizedEmail, type) as any;
+    const [existing] = await db
+      .select()
+      .from(otpCodes)
+      .where(
+        and(
+          eq(otpCodes.email, normalizedEmail),
+          eq(otpCodes.type, type)
+        )
+      )
+      .limit(1);
 
-    if (existing) {
-      const secondsSinceLast = (now - existing.last_sent_at) / 1000;
-      const waitRequired = BACKOFF_TIMERS[Math.min(existing.attempt_count, BACKOFF_TIMERS.length - 1)];
+    if (existing && existing.lastSentAt) {
+      // Postgres TIMESTAMP comes back as a Date object, convert to ms
+      const lastSentMs = existing.lastSentAt.getTime();
+      const secondsSinceLast = (now - lastSentMs) / 1000;
+      
+      // Calculate wait time based on previous attempts
+      const waitRequired = BACKOFF_TIMERS[Math.min(existing.attemptCount ?? 0, BACKOFF_TIMERS.length - 1)];
 
       if (secondsSinceLast < waitRequired) {
         const remaining = Math.ceil(waitRequired - secondsSinceLast);
@@ -592,19 +743,33 @@ app.post("/api/otp/request", async (req, res) => {
 
     // 2. Generate OTP Data
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = now + (10 * 60 * 1000); // 10 minute expiry
-    const newAttemptCount = existing ? existing.attempt_count + 1 : 0;
+    const expiresAt = new Date(now + (10 * 60 * 1000)); // 10 minute expiry as Date
+    const newAttemptCount = existing ? (existing.attemptCount ?? 0) + 1 : 0;
 
-    // 3. Persist to Database
-    db.prepare(`
-      INSERT OR REPLACE INTO otp_codes (email, otp, type, expires_at, attempt_count, last_sent_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(normalizedEmail, otp, type, expiresAt, newAttemptCount, now);
+    // 3. Persist to Database (Postgres Upsert)
+    // IMPORTANT: Requires unique constraint on (email, type) in schema.ts
+    await db.insert(otpCodes)
+      .values({
+        email: normalizedEmail,
+        otp,
+        type,
+        expiresAt,
+        attemptCount: newAttemptCount,
+        lastSentAt: new Date(now),
+      })
+      .onConflictDoUpdate({
+        target: [otpCodes.email, otpCodes.type],
+        set: {
+          otp,
+          expiresAt,
+          attemptCount: newAttemptCount,
+          lastSentAt: new Date(now),
+        }
+      });
 
-    // 4. DEVELOPMENT LOGGING (Your "Virtual Inbox")
-    console.log("\n--- 🛡️ NEW OTP GENERATED ---");
+    // 4. DEVELOPMENT LOGGING
+    console.log("\n--- 🛡️ NEW OTP GENERATED (POSTGRES) ---");
     console.log(`📍 TARGET: ${normalizedEmail}`);
-    console.log(`🏷️  TYPE:   ${type.toUpperCase()}`);
     console.log(`🔢 CODE:   ${otp}`);
     console.log(`⏳ NEXT RETRY: ${BACKOFF_TIMERS[Math.min(newAttemptCount, BACKOFF_TIMERS.length - 1)]}s`);
     console.log("---------------------------\n");
@@ -612,7 +777,7 @@ app.post("/api/otp/request", async (req, res) => {
     // 5. Attempt Email Delivery via Resend
     try {
       await resend.emails.send({
-        from: 'GST Pro <onboarding@resend.dev>',
+        from: 'fileDX <onboarding@resend.dev>',
         to: normalizedEmail,
         subject: type === 'identity' ? "Verify Your Email" : "Admin Authorization Required",
         html: `<strong>Your verification code is: ${otp}</strong><p>This code expires in 10 minutes.</p>`,
@@ -625,8 +790,7 @@ app.post("/api/otp/request", async (req, res) => {
       });
 
     } catch (emailError) {
-      // In development, we treat email failure as a "soft success"
-      // because we have the terminal log to fall back on.
+      // Soft success for development
       console.warn(`⚠️ Resend failed (likely unverified email): ${normalizedEmail}`);
       return res.json({ 
         success: true, 
@@ -641,25 +805,42 @@ app.post("/api/otp/request", async (req, res) => {
   }
 });
 
-app.post("/api/otp/verify", (req, res) => {
-  const { email, otp, type } = req.body;
-  const normalizedEmail = email.toLowerCase().trim();
+app.post("/api/otp/verify", async (req, res) => {
+  try {
+    const { email, otp, type } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
 
-  const record = db.prepare(
-    "SELECT * FROM otp_codes WHERE email = ? AND otp = ? AND type = ?"
-  ).get(normalizedEmail, otp, type) as any;
+    // 1. Find the specific record
+    const [record] = await db
+      .select()
+      .from(otpCodes)
+      .where(
+        and(
+          eq(otpCodes.email, normalizedEmail),
+          eq(otpCodes.otp, otp),
+          eq(otpCodes.type, type)
+        )
+      )
+      .limit(1);
 
-  if (!record) {
-    return res.status(400).json({ error: "Invalid code." });
+    // 2. Check if OTP exists
+    if (!record) {
+      return res.status(400).json({ error: "Invalid code." });
+    }
+
+    // 3. Expiry check 
+    // Since record.expiresAt is a Date object from Postgres, 
+    // we compare it directly with the current date.
+    if (new Date() > record.expiresAt) {
+      return res.status(400).json({ error: "Code has expired. Request a new one." });
+    }
+
+    // Success - We keep the record for the actual registration/action step
+    res.json({ success: true, message: "Code is valid." });
+  } catch (error) {
+    console.error("OTP Verification Error:", error);
+    res.status(500).json({ error: "Failed to verify code." });
   }
-
-  if (Date.now() > record.expires_at) {
-    return res.status(400).json({ error: "Code has expired. Request a new one." });
-  }
-
-  // We DON'T delete it yet. We delete it only after successful registration 
-  // in auth.ts to ensure the "session" of verification stays active.
-  res.json({ success: true, message: "Code is valid." });
 });
   return httpServer;
 }

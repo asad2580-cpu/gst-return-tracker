@@ -112,7 +112,12 @@ router.post("/register", async (req: Request, res: Response) => {
     }
 
     // 3. User Creation
-    const existing = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    const existing = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, normalizedEmail))
+      .limit(1);
+
     if (existing[0]) return res.status(409).json({ error: "Email already registered." });
 
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -126,6 +131,8 @@ router.post("/register", async (req: Request, res: Response) => {
       role: role,
       createdBy: createdBy,
     }).returning();
+
+    const { password: _, ...userWithoutPassword } = newUser;
 
     const access = signAccess({ sub: newUser.id });
     const refresh = signRefresh({ sub: newUser.id });
@@ -148,27 +155,52 @@ router.post("/register", async (req: Request, res: Response) => {
 // LOGIN (Simplified Translation)
 router.post("/login", async (req: Request, res: Response) => {
   try {
+    // 1. Get credentials from the request body and clean the email
     const { email, password } = req.body;
-    const results = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // 2. Query Postgres using Drizzle. 
+    // We use 'username' here because your schema uses that as the unique login ID.
+    // .limit(1) makes the query faster by stopping after the first match.
+    const results = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, normalizedEmail))
+      .limit(1);
+
     const user = results[0];
 
+    // 3. Verify if user exists AND if the password matches the hashed version in DB
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
+    // 4. SECURITY STEP: Strip the password hash from the user object.
+    // We use 'rest' (userWithoutPassword) to send data to the frontend safely.
+    const { password: _, ...userWithoutPassword } = user;
+
+    // 5. Generate JWT tokens for the session
     const access = signAccess({ sub: user.id });
     const refresh = signRefresh({ sub: user.id });
 
+    // 6. Set the Refresh Token in a secure, HTTP-only cookie.
+    // This prevents Javascript from stealing the token (XSS protection).
     res.cookie("refreshToken", refresh, {
       httpOnly: true,
       maxAge: REFRESH_EXPIRES_SECONDS * 1000,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: process.env.NODE_ENV === "production", // Only use HTTPS in production
       path: "/api/auth/refresh",
     });
 
-    return res.json({ user, accessToken: access });
+    // 7. Send back the safe user data and the short-lived access token
+    return res.json({ 
+      user: userWithoutPassword, 
+      accessToken: access 
+    });
+
   } catch (err) {
+    console.error("Login Error:", err);
     return res.status(500).json({ error: "Login failed" });
   }
 });

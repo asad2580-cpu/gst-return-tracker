@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, serial, timestamp, pgEnum, uuid, integer, AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, timestamp, pgEnum, uuid, integer, AnyPgColumn, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -11,11 +11,14 @@ export const otpCodes = pgTable("otp_codes", {
   id: serial("id").primaryKey(),
   email: text("email").notNull(),
   otp: text("otp").notNull(),
-  type: text("type").notNull(), // 'identity' or 'authorization'
+  type: text("type").notNull(), 
   expiresAt: timestamp("expires_at").notNull(),
   attemptCount: integer("attempt_count").default(0),
   lastSentAt: timestamp("last_sent_at").notNull(),
-});
+}, (table) => ({
+  // IMPORTANT: This allows the .onConflictDoUpdate logic to work!
+  emailTypeIdx: uniqueIndex("email_type_idx").on(table.email, table.type),
+}));
 
 export const users = pgTable("users", {
   // Use uuid for industry-standard unique IDs in Postgres
@@ -57,8 +60,15 @@ export const gstReturns = pgTable("gst_returns", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const usersRelations = relations(users, ({ many }) => ({
+export const usersRelations = relations(users, ({ many, one }) => ({
   clients: many(clients),
+  // Allows you to do: db.query.users.findMany({ with: { creator: true } })
+  creator: one(users, {
+    fields: [users.createdBy],
+    references: [users.id],
+    relationName: "userCreator",
+  }),
+  createdUsers: many(users, { relationName: "userCreator" }),
 }));
 
 export const clientsRelations = relations(clients, ({ one, many }) => ({

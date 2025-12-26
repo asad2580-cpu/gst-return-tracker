@@ -183,7 +183,7 @@ export default function Login() {
     onSuccess: () => {
       // This invalidates the staff list so they show up immediately
       queryClient.invalidateQueries({ queryKey: ["/api/users"] }); 
-      toast({ title: "Account Created", description: "Welcome to GST Pro!" });
+      toast({ title: "Account Created", description: "Welcome to fileDX!" });
       setLocation("/dashboard");
     },
     onError: (error: any) => {
@@ -199,7 +199,7 @@ export default function Login() {
       <Card className="w-full max-w-md shadow-xl relative z-10">
         <CardHeader className="text-center">
           <img src={logoUrl} alt="Logo" className="h-12 w-12 mx-auto mb-4" />
-          <CardTitle className="text-2xl">GST Pro</CardTitle>
+          <CardTitle className="text-2xl">fileDX</CardTitle>
           <CardDescription>Practice Management System</CardDescription>
         </CardHeader>
 
