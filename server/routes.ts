@@ -777,7 +777,7 @@ app.post("/api/otp/request", async (req, res) => {
     // 5. Attempt Email Delivery via Resend
     try {
       await resend.emails.send({
-        from: 'FileDX <no-reply@FileDX.co.in>',
+        from: 'FileDX <no-reply@filedx.co.in>',
         to: normalizedEmail,
         subject: type === 'identity' ? "Verify Your Email" : "Admin Authorization Required",
         html: `<strong>Your verification code is: ${otp}</strong><p>This code expires in 10 minutes.</p>`,
