@@ -130,7 +130,7 @@ app.post("/api/verify-admin", async (req, res) => {
 
     // 4. Send Email
     await resend.emails.send({
-      from: 'fileDX <onboarding@resend.dev>',
+      from: 'FileDX <onboarding@resend.dev>',
       to: normalizedAdminEmail,
       subject: 'Staff Registration OTP',
       html: `<p>A staff member is registering. Provide them this code: <strong>${otp}</strong></p>`,
@@ -777,7 +777,7 @@ app.post("/api/otp/request", async (req, res) => {
     // 5. Attempt Email Delivery via Resend
     try {
       await resend.emails.send({
-        from: 'fileDX <onboarding@resend.dev>',
+        from: 'FileDX <no-reply@FileDX.co.in>',
         to: normalizedEmail,
         subject: type === 'identity' ? "Verify Your Email" : "Admin Authorization Required",
         html: `<strong>Your verification code is: ${otp}</strong><p>This code expires in 10 minutes.</p>`,

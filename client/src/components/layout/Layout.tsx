@@ -39,11 +39,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className="p-6 flex items-center gap-3">
         <img
           src={logoUrl}
-          alt="fileDX"
+          alt="FileDX"
           className="h-8 w-8 rounded-sm bg-white/10 p-1"
         />
         <span className="font-display font-bold text-xl tracking-tight">
-          fileDX
+          FileDX
         </span>
       </div>
 
