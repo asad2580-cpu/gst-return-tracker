@@ -1,9 +1,10 @@
 import { Router, Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
+import { Resend } from 'resend';
 import jwt from "jsonwebtoken";
 import { db } from "./db"; 
-import { users, otpCodes } from "@shared/schema"; 
-import { eq, and } from "drizzle-orm"; 
+import { users, otpCodes, passwordHistory } from "@shared/schema"; 
+import { eq, and, desc } from "drizzle-orm"; 
 import cookieParser from "cookie-parser";
 
 export const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
@@ -11,6 +12,7 @@ const ACCESS_EXPIRES = "15m";
 const REFRESH_EXPIRES_SECONDS = 7 * 24 * 60 * 60; 
 const SALT_ROUNDS = 10;
 
+const resend = new Resend(process.env.RESEND_API_KEY);
 /* ---- Helper Functions ---- */
 function signAccess(payload: object) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: ACCESS_EXPIRES });
@@ -207,6 +209,99 @@ router.post("/refresh", async (req: Request, res: Response) => {
 router.post("/logout", (req, res) => {
   res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
   return res.json({ message: "Logged out successfully" });
+});
+
+
+// 1. Request Password Reset OTP
+router.post("/forgot-password", async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // 1. Verify the user actually exists in our system
+    const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    
+    if (!user) {
+      // Security Tip: We return 200 even if user doesn't exist to prevent email harvesting,
+      // but for internal apps, a 404 is often more helpful. Let's stay helpful:
+      return res.status(404).json({ error: "No account found with this email." });
+    }
+
+    // 2. Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 Min expiry
+
+    // 3. Store in otpCodes table
+    // Add this inside your forgot-password route
+await db.insert(otpCodes).values({
+  email: normalizedEmail,
+  otp: otp,
+  type: 'password_reset',
+  expiresAt: expiresAt,
+  lastSentAt: new Date(), // This satisfies the schema requirement
+}).onConflictDoUpdate({
+  target: [otpCodes.email, otpCodes.type],
+  set: {
+    otp: otp,
+    expiresAt: expiresAt,
+    lastSentAt: new Date(),
+  }
+});
+
+    // 4. Send via Resend
+    await resend.emails.send({
+      from: 'fileDX <no-reply@filedx.co.in>',
+      to: normalizedEmail,
+      subject: 'Password Reset Code - fileDX',
+      html: `
+        <div style="font-family: sans-serif; padding: 20px;">
+          <h2>Password Reset Request</h2>
+          <p>You requested to reset your password. Use the code below:</p>
+          <h1 style="color: #2563eb; letter-spacing: 5px;">${otp}</h1>
+          <p>This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
+        </div>
+      `,
+    });
+
+    return res.json({ message: "Reset code sent successfully." });
+  } catch (err) {
+    console.error("Forgot Password Error:", err);
+    return res.status(500).json({ error: "Failed to process request." });
+  }
+});
+
+// 2. Final Password Update
+router.post("/reset-password", async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+
+  // 1. Standard OTP and User checks...
+  const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+
+  // 2. Fetch Password History
+  const history = await db.select()
+    .from(passwordHistory)
+    .where(eq(passwordHistory.userId, user.id))
+    .orderBy(desc(passwordHistory.createdAt))
+    .limit(5);
+
+  // 3. Compare new password against current and history
+  const allPastPasswords = [user.password, ...history.map(h => h.passwordHash)];
+  
+  for (const oldHash of allPastPasswords) {
+    const isMatch = await bcrypt.compare(newPassword, oldHash);
+    if (isMatch) {
+      return res.status(400).json({ 
+        error: "You cannot use any of your last 5 passwords. Please choose a new one." 
+      });
+    }
+  }
+
+  // 4. Update password and add to history
+  const newHash = await bcrypt.hash(newPassword, 10);
+  await db.update(users).set({ password: newHash }).where(eq(users.id, user.id));
+  await db.insert(passwordHistory).values({ userId: user.id, passwordHash: newHash });
+
+  res.json({ message: "Password updated successfully!" });
 });
 
 // 6. GET ME

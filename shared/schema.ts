@@ -20,6 +20,13 @@ export const otpCodes = pgTable("otp_codes", {
   emailTypeIdx: uniqueIndex("email_type_idx").on(table.email, table.type),
 }));
 
+export const passwordHistory = pgTable("password_history", {
+  id: serial("id").primaryKey(),
+  userId: uuid("user_id").references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const users = pgTable("users", {
   // Use uuid for industry-standard unique IDs in Postgres
   id: uuid("id").primaryKey().defaultRandom(), 
@@ -160,6 +167,8 @@ export const assignmentLogsRelations = relations(assignmentLogs, ({ one }) => ({
     fields: [assignmentLogs.adminId],
     references: [users.id],
   }),
+
+  
   
 }));
 

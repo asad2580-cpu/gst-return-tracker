@@ -15,12 +15,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from "@/components/ui/select";
 import { FcGoogle } from "react-icons/fc";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -29,12 +29,21 @@ import { Loader2 } from "lucide-react";
 
 // --- FIREBASE IMPORTS ---
 import { signInWithPopup } from "firebase/auth";
-import { auth, googleProvider } from "../firebase"; 
+import { auth, googleProvider } from "../firebase";
 
 export default function Login() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { user, loginMutation, registerMutation } = useAuth();
+
+  // --- PASSWORD RESET STATES ---
+  const [isResetMode, setIsResetMode] = useState(false);
+  const [resetStep, setResetStep] = useState(1); // 1: Email, 2: OTP + New Pass
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetOtp, setResetOtp] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   // --- STATE MANAGEMENT ---
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
@@ -43,7 +52,7 @@ export default function Login() {
 
   // Forms for traditional email/password login
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
-  
+
   const [registerForm, setRegisterForm] = useState({
     name: "",
     email: "",
@@ -78,6 +87,39 @@ export default function Login() {
   if (user) {
     return <Redirect to="/dashboard" />;
   }
+  // --- PASSWORD RESET HANDLERS ---
+  const handleRequestReset = async () => {
+    if (!resetEmail) return toast({ title: "Email Required", variant: "destructive" });
+    setResetLoading(true);
+    try {
+      const res = await apiRequest("POST", "/api/auth/forgot-password", { email: resetEmail });
+      toast({ title: "Code Sent", description: "Check your email for the reset code." });
+      setResetStep(2);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const handleFinalReset = async () => {
+    if (newPassword.length < 8) return toast({ title: "Password too short", variant: "destructive" });
+    setResetLoading(true);
+    try {
+      await apiRequest("POST", "/api/auth/reset-password", {
+        email: resetEmail,
+        otp: resetOtp,
+        newPassword
+      });
+      toast({ title: "Success", description: "Password updated! You can now login." });
+      setIsResetMode(false);
+      setResetStep(1);
+    } catch (error: any) {
+      toast({ title: "Invalid Code", description: error.message, variant: "destructive" });
+    } finally {
+      setResetLoading(false);
+    }
+  };
 
   // --- LOGIC FUNCTIONS ---
 
@@ -160,37 +202,37 @@ export default function Login() {
   };
 
   const handleRegister = (e: React.FormEvent) => {
-  e.preventDefault();
+    e.preventDefault();
 
-  // 1. Validation: Ensure we don't even try if the UI hasn't been verified
-  if (!isSelfVerified) {
-    return toast({ title: "Verify Email", description: "Please verify your own OTP first.", variant: "destructive" });
-  }
-  if (registerForm.role === 'staff' && !isAdminVerified) {
-    return toast({ title: "Admin Auth Required", description: "Please get authorization from your manager.", variant: "destructive" });
-  }
-
-  // 2. Explicitly pass all fields to the mutation
-  registerMutation.mutate({
-    name: registerForm.name,
-    email: registerForm.email,
-    password: registerForm.password,
-    role: registerForm.role,
-    otp: registerForm.otp,           // Ensure this is in your state
-    adminEmail: registerForm.adminEmail,
-    adminOtp: registerForm.adminOtp  // Ensure this is in your state
-  }, {
-    onSuccess: () => {
-      // This invalidates the staff list so they show up immediately
-      queryClient.invalidateQueries({ queryKey: ["/api/users"] }); 
-      toast({ title: "Account Created", description: "Welcome to FileDX!" });
-      setLocation("/dashboard");
-    },
-    onError: (error: any) => {
-      toast({ title: "Registration Failed", description: error.message, variant: "destructive" });
+    // 1. Validation: Ensure we don't even try if the UI hasn't been verified
+    if (!isSelfVerified) {
+      return toast({ title: "Verify Email", description: "Please verify your own OTP first.", variant: "destructive" });
     }
-  });
-};
+    if (registerForm.role === 'staff' && !isAdminVerified) {
+      return toast({ title: "Admin Auth Required", description: "Please get authorization from your manager.", variant: "destructive" });
+    }
+
+    // 2. Explicitly pass all fields to the mutation
+    registerMutation.mutate({
+      name: registerForm.name,
+      email: registerForm.email,
+      password: registerForm.password,
+      role: registerForm.role,
+      otp: registerForm.otp,           // Ensure this is in your state
+      adminEmail: registerForm.adminEmail,
+      adminOtp: registerForm.adminOtp  // Ensure this is in your state
+    }, {
+      onSuccess: () => {
+        // This invalidates the staff list so they show up immediately
+        queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+        toast({ title: "Account Created", description: "Welcome to FileDX!" });
+        setLocation("/dashboard");
+      },
+      onError: (error: any) => {
+        toast({ title: "Registration Failed", description: error.message, variant: "destructive" });
+      }
+    });
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">
@@ -212,40 +254,148 @@ export default function Login() {
 
             {/* --- LOGIN TAB --- */}
             <TabsContent value="login" className="space-y-4">
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Email</Label>
-                  <Input 
-                    type="email" 
-                    required 
-                    value={loginForm.email}
-                    onChange={(e) => setLoginForm({...loginForm, email: e.target.value})}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Password</Label>
-                  <Input 
-                    type="password" 
-                    required 
-                    value={loginForm.password}
-                    onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={loginMutation.isPending}>
-                  {loginMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Sign In
-                </Button>
-              </form>
-              
-              <div className="relative my-4 text-center text-xs uppercase text-muted-foreground">
-                <span className="bg-background px-2 relative z-10">Or login with</span>
-                <hr className="absolute top-1/2 w-full border-t" />
-              </div>
+              {!isResetMode ? (
+                <>
+                  {/* 1. STANDARD LOGIN FORM */}
+                  <form onSubmit={handleLogin} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Email</Label>
+                      <Input
+                        type="email"
+                        required
+                        value={loginForm.email}
+                        onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
+                        placeholder="h94952977@gmail.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <Label>Password</Label>
+                        <Button
+                          variant="link"
+                          className="p-0 h-auto text-xs"
+                          type="button"
+                          onClick={() => setIsResetMode(true)}
+                        >
+                          Forgot Password?
+                        </Button>
+                      </div>
+                      <Input
+                        type="password"
+                        required
+                        value={loginForm.password}
+                        onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                      />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={loginMutation.isPending}>
+                      {loginMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Sign In
+                    </Button>
+                  </form>
 
-              <Button variant="outline" className="w-full" onClick={() => handleGoogleAuth("login")}>
-                <FcGoogle className="mr-2 h-5 w-5" />
-                Continue with Google
-              </Button>
+                  {/* 2. GOOGLE LOGIN SECTION (Only shows on the main login screen) */}
+                  <div className="relative my-4 text-center text-xs uppercase text-muted-foreground">
+                    <span className="bg-background px-2 relative z-10">Or login with</span>
+                    <hr className="absolute top-1/2 w-full border-t" />
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => handleGoogleAuth("login")}
+                    disabled={isGoogleLoading}
+                  >
+                    {isGoogleLoading ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <FcGoogle className="mr-2 h-5 w-5" />
+                    )}
+                    Continue with Google
+                  </Button>
+                </>
+              ) : (
+                /* 3. FORGOT PASSWORD FLOW */
+                <div className="space-y-4 animate-in fade-in slide-in-from-right-2">
+                  <div className="space-y-1">
+                    <CardTitle className="text-lg">Reset Password</CardTitle>
+                    <CardDescription>
+                      {resetStep === 1
+                        ? "Enter your email to receive a reset code."
+                        : "Enter the code and choose a new password."}
+                    </CardDescription>
+                  </div>
+
+                  {resetStep === 1 ? (
+                    /* STEP 1: Email Request */
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Registered Email</Label>
+                        <Input
+                          type="email"
+                          placeholder="name@example.com"
+                          value={resetEmail}
+                          onChange={(e) => setResetEmail(e.target.value)}
+                        />
+                      </div>
+                      <Button className="w-full" onClick={handleRequestReset} disabled={resetLoading}>
+                        {resetLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Send Reset Code
+                      </Button>
+                    </div>
+                  ) : (
+                    /* STEP 2: OTP + New Password + History Check */
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>6-Digit Code</Label>
+                        <Input
+                          placeholder="000000"
+                          maxLength={6}
+                          value={resetOtp}
+                          onChange={(e) => setResetOtp(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>New Password</Label>
+                        <Input
+                          type="password"
+                          placeholder="Must not be in your last 5"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Confirm New Password</Label>
+                        <Input
+                          type="password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          className={confirmPassword && newPassword !== confirmPassword ? "border-red-500" : ""}
+                        />
+                        {confirmPassword && newPassword !== confirmPassword && (
+                          <p className="text-xs text-red-500 font-medium">Passwords do not match</p>
+                        )}
+                      </div>
+
+                      <Button
+                        className="w-full"
+                        onClick={handleFinalReset}
+                        disabled={resetLoading || !newPassword || newPassword !== confirmPassword || resetOtp.length !== 6}
+                      >
+                        {resetLoading ? <Loader2 className="animate-spin mr-2 h-4 w-4" /> : null}
+                        Update Password
+                      </Button>
+                    </div>
+                  )}
+
+                  <Button
+                    variant="ghost"
+                    className="w-full text-xs"
+                    onClick={() => { setIsResetMode(false); setResetStep(1); }}
+                  >
+                    Back to Login
+                  </Button>
+                </div>
+              )}
             </TabsContent>
 
             {/* --- REGISTER TAB --- */}
@@ -263,17 +413,17 @@ export default function Login() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <Label>Full Name</Label>
-                  <Input 
-                    placeholder="Dheeraj Yadav" 
+                  <Input
+                    placeholder="Dheeraj Yadav"
                     value={registerForm.name}
-                    onChange={(e) => setRegisterForm({...registerForm, name: e.target.value})}
+                    onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
                   />
                 </div>
                 <div className="space-y-1">
                   <Label>Role</Label>
-                  <Select 
-                    value={registerForm.role} 
-                    onValueChange={(v: any) => setRegisterForm({...registerForm, role: v})}
+                  <Select
+                    value={registerForm.role}
+                    onValueChange={(v: any) => setRegisterForm({ ...registerForm, role: v })}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select role" />
@@ -288,21 +438,21 @@ export default function Login() {
 
               <div className="space-y-1">
                 <Label>Email</Label>
-                <Input 
-                  type="email" 
-                  placeholder="name@example.com" 
+                <Input
+                  type="email"
+                  placeholder="name@example.com"
                   value={registerForm.email}
-                  onChange={(e) => setRegisterForm({...registerForm, email: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
                 />
               </div>
 
               <div className="space-y-1">
                 <Label>Create Password</Label>
-                <Input 
-                  type="password" 
+                <Input
+                  type="password"
                   placeholder="Minimum 8 characters"
                   value={registerForm.password}
-                  onChange={(e) => setRegisterForm({...registerForm, password: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
                 />
               </div>
 
@@ -315,26 +465,26 @@ export default function Login() {
                   {isSelfVerified && <span className="text-xs font-bold text-green-600 flex items-center gap-1">✅ VERIFIED</span>}
                 </div>
                 <div className="flex gap-2">
-                  <Input 
-                    placeholder="6-digit code" 
+                  <Input
+                    placeholder="6-digit code"
                     className="bg-white"
                     value={registerForm.otp}
                     disabled={isSelfVerified}
-                    onChange={(e) => setRegisterForm({...registerForm, otp: e.target.value})}
+                    onChange={(e) => setRegisterForm({ ...registerForm, otp: e.target.value })}
                   />
                   {!isSelfVerified ? (
                     <>
-                      <Button 
-                        type="button" 
-                        variant="outline" 
+                      <Button
+                        type="button"
+                        variant="outline"
                         size="sm"
                         disabled={selfTimer > 0 || !registerForm.email}
                         onClick={() => sendOtp(registerForm.email, 'identity')}
                       >
                         {selfTimer > 0 ? formatTime(selfTimer) : "Send"}
                       </Button>
-                      <Button 
-                        type="button" 
+                      <Button
+                        type="button"
                         size="sm"
                         disabled={registerForm.otp.length !== 6}
                         onClick={() => verifyOtp(registerForm.email, registerForm.otp, 'identity')}
@@ -357,34 +507,34 @@ export default function Login() {
                     <Label className="text-sm font-bold text-blue-800">STEP 2: MANAGER AUTH</Label>
                     {isAdminVerified && <span className="text-xs font-bold text-blue-600 flex items-center gap-1">✅ AUTHORIZED</span>}
                   </div>
-                  <Input 
-                    placeholder="Manager's Email" 
+                  <Input
+                    placeholder="Manager's Email"
                     className="bg-white h-8 text-sm"
                     value={registerForm.adminEmail}
                     disabled={isAdminVerified}
-                    onChange={(e) => setRegisterForm({...registerForm, adminEmail: e.target.value})}
+                    onChange={(e) => setRegisterForm({ ...registerForm, adminEmail: e.target.value })}
                   />
                   <div className="flex gap-2">
-                    <Input 
-                      placeholder="Manager's Code" 
+                    <Input
+                      placeholder="Manager's Code"
                       className="bg-white"
                       value={registerForm.adminOtp}
                       disabled={isAdminVerified}
-                      onChange={(e) => setRegisterForm({...registerForm, adminOtp: e.target.value})}
+                      onChange={(e) => setRegisterForm({ ...registerForm, adminOtp: e.target.value })}
                     />
                     {!isAdminVerified ? (
                       <>
-                        <Button 
-                          type="button" 
-                          variant="outline" 
+                        <Button
+                          type="button"
+                          variant="outline"
                           size="sm"
                           disabled={adminTimer > 0 || !registerForm.adminEmail}
                           onClick={() => sendOtp(registerForm.adminEmail, 'authorization')}
                         >
                           {adminTimer > 0 ? formatTime(adminTimer) : "Get"}
                         </Button>
-                        <Button 
-                          type="button" 
+                        <Button
+                          type="button"
                           size="sm"
                           variant="secondary"
                           disabled={registerForm.adminOtp.length !== 6}
@@ -402,12 +552,12 @@ export default function Login() {
                 </div>
               )}
 
-              <Button 
-                className="w-full mt-4 h-12 text-lg font-semibold" 
+              <Button
+                className="w-full mt-4 h-12 text-lg font-semibold"
                 onClick={handleRegister}
                 disabled={
-                  registerMutation.isPending || 
-                  !isSelfVerified || 
+                  registerMutation.isPending ||
+                  !isSelfVerified ||
                   (registerForm.role === 'staff' && !isAdminVerified)
                 }
               >
