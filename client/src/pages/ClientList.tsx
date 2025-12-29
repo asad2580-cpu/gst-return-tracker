@@ -1,5 +1,6 @@
 import { BulkImportDialog } from "../components/BulkImportDialog";
 import { HistoryModal } from "../components/HistoryModal"; // or wherever you saved it
+import { DeleteClientAction } from "../components/DeleteClientAction";
 import React, { useMemo, useState } from "react";
 import { History, Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
 //import { History, Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
@@ -1052,6 +1053,14 @@ export default function ClientList() {
                     Save Changes
                   </Button>
                 </DialogFooter>
+                {/* Inside Edit Dialog Content */}
+                <div className="mt-6 pt-6 border-t border-dashed">
+                  <DeleteClientAction
+                    clientId={editingClient.id}
+                    clientName={editingClient.name}
+                    onSuccess={() => setIsEditDialogOpen(false)}
+                  />
+                </div>
               </DialogContent>
             </Dialog>
           )}

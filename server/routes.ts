@@ -6,7 +6,7 @@ import { Resend } from 'resend';
 
 // Database & Schema
 import { db } from "./db";
-import { users, clients, gstReturns, otpCodes, assignmentLogs, insertClientSchema } from "@shared/schema";
+import { users, clients, gstReturns, otpCodes, assignmentLogs, insertClientSchema, deletedClientsLog } from "@shared/schema";
 
 // Drizzle ORM Helpers
 import { eq, and, ne, desc, sql } from "drizzle-orm";
@@ -704,6 +704,43 @@ app.patch("/api/returns/:id", requireAdmin, async (req: any, res: any, next: any
   } catch (error) {
     console.error("Error updating return:", error);
     next(error);
+  }
+});
+
+
+app.delete("/api/clients/:id", async (req, res) => {
+  // 1. Admin Check
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ message: "Only admins can delete clients" });
+  }
+
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  if (!reason || reason.length > 50) {
+    return res.status(400).json({ message: "A valid reason (max 50 chars) is required" });
+  }
+
+  try {
+    // 2. Get client data for the log before deleting
+    const [client] = await db.select().from(clients).where(eq(clients.id, id));
+    
+    // 3. Perform Deletion and Logging in a transaction
+    await db.transaction(async (tx) => {
+      await tx.insert(deletedClientsLog).values({
+        clientName: client.name,
+        gstin: client.gstin,
+        deletedBy: req.user!.id.toString(),
+        reason: reason
+      });
+      
+      // Note: This will also delete related 'gst_returns' if you have 'onDelete: cascade'
+      await tx.delete(clients).where(eq(clients.id, id));
+    });
+
+    res.sendStatus(204);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete client" });
   }
 });
 

@@ -20,6 +20,15 @@ export const otpCodes = pgTable("otp_codes", {
   emailTypeIdx: uniqueIndex("email_type_idx").on(table.email, table.type),
 }));
 
+export const deletedClientsLog = pgTable("deleted_clients_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clientName: text("client_name").notNull(),
+  gstin: text("gstin").notNull(),
+  deletedBy: uuid("deleted_by").notNull(),
+  reason: text("reason").notNull(),
+  deletedAt: timestamp("deleted_at").defaultNow().notNull(),
+});
+
 export const passwordHistory = pgTable("password_history", {
   id: serial("id").primaryKey(),
   userId: uuid("user_id").references(() => users.id, { onDelete: 'cascade' }).notNull(),
