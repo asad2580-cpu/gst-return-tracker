@@ -746,9 +746,10 @@ export async function registerRoutes(
   });
 
   app.post("/api/staff/:id/delete-workflow", async (req: Request, res: Response) => {
-  // 1. Safe Check for Auth (Fixes the 'possibly undefined' error)
-  const isAuthed = typeof req.isAuthenticated === "function" ? req.isAuthenticated() : false;
-  
+  // ---- Auth checks (unchanged logic) ----
+  const isAuthed =
+    typeof req.isAuthenticated === "function" ? req.isAuthenticated() : false;
+
   if (!isAuthed || !req.user) {
     return res.status(401).json({ message: "Unauthorized" });
   }
@@ -757,51 +758,79 @@ export async function registerRoutes(
     return res.status(403).json({ message: "Forbidden" });
   }
 
-  const { id } = req.params;
-  const { reason, reassignments } = req.body;
-  // ... rest of your code remains the same
-  const adminName = req.user.name || "Admin"; // Fixes "possibly undefined"
+  const staffId = req.params.id;
+  const { reason, reassignments = {} } = req.body;
+  const adminName = req.user.name || "Admin";
 
   try {
-    const [staff] = await db.select().from(users).where(eq(users.id, id));
-    if (!staff) return res.status(404).send("Staff not found");
+    // ---- 1. Ensure staff exists ----
+    const [staff] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, staffId));
 
+    if (!staff) {
+      return res.status(404).json({ message: "Staff not found" });
+    }
+
+    // ---- 2. Check assigned clients (IMPORTANT) ----
+    const assignedClients = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(eq(clients.assignedToId, staffId));
+
+    if (
+      assignedClients.length > 0 &&
+      Object.keys(reassignments).length !== assignedClients.length
+    ) {
+      return res.status(400).json({
+        message: "All assigned clients must be reassigned before deleting staff",
+      });
+    }
+
+    // ---- 3. Transaction (single source of truth) ----
     await db.transaction(async (tx) => {
-      // 1. Log Deletion (Matches the NEW schema from Step 1)
+      // 3.1 Log deletion (your existing logic preserved)
       await tx.insert(deletedStaffLog).values({
         staffEmail: staff.username || "Unknown",
         staffName: staff.name || "Unknown",
-        adminName: adminName,
-        reason: reason as string,
+        adminName,
+        reason,
       });
 
-      // 2. Clear foreign keys in history so we can delete the user
-      // We check both 'from' and 'to' columns because they reference the user ID
-      await tx.update(assignmentLogs)
-        .set({ fromStaffId: null })
-        .where(eq(assignmentLogs.fromStaffId, id));
-
-      await tx.update(assignmentLogs)
-        .set({ toStaffId: null })
-        .where(eq(assignmentLogs.toStaffId, id));
-
-      // 3. Reassign Clients
+      // 3.2 Reassign clients FIRST (required by FK constraint)
       for (const [clientId, newStaffId] of Object.entries(reassignments)) {
-        await tx.update(clients)
+        await tx
+          .update(clients)
           .set({ assignedToId: newStaffId as string })
           .where(eq(clients.id, clientId));
       }
 
-      // 4. Finally Delete the User
-      await tx.delete(users).where(eq(users.id, id));
+      // 3.3 Clean assignment logs (keep history, avoid FK issues)
+      await tx
+        .update(assignmentLogs)
+        .set({ fromStaffId: null })
+        .where(eq(assignmentLogs.fromStaffId, staffId));
+
+      await tx
+        .update(assignmentLogs)
+        .set({ toStaffId: null })
+        .where(eq(assignmentLogs.toStaffId, staffId));
+
+      // 3.4 Delete staff LAST (DB now guarantees safety)
+      await tx.delete(users).where(eq(users.id, staffId));
     });
 
-    res.sendStatus(200);
+    return res.sendStatus(200);
   } catch (e: any) {
     console.error("DELETE ERROR:", e);
-    res.status(500).json({ message: "Transaction failed", detail: e.message });
+    return res.status(500).json({
+      message: "Transaction failed",
+      detail: e.message,
+    });
   }
 });
+
 
   // GET only the staff created by the logged-in Admin
   app.get("/api/users", requireAuth, async (req: any, res) => {
