@@ -47,6 +47,7 @@ export const clients = pgTable("clients", {
   gstUsername: text("gst_username"),
   gstPassword: text("gst_password"),
   remarks: text("remarks"),
+  returnStartDate: text("return_start_date"), // Optional: e.g., "2023-01"
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -109,6 +110,9 @@ export const insertUserSchema = createInsertSchema(users).omit({
 export const insertClientSchema = createInsertSchema(clients).omit({
   id: true,
   createdAt: true,
+}).extend({
+  // These extra fields help our backend logic but aren't stored in the 'clients' table directly
+  initialHistoryStatus: z.enum(['Pending', 'Filed']).optional(),
 });
 
 export const insertGstReturnSchema = createInsertSchema(gstReturns).omit({

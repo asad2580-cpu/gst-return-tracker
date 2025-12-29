@@ -1,3 +1,4 @@
+import { generateMonthList } from "./utils";
 import express, { type Express, Request, Response, NextFunction, Router } from "express";
 import { createServer, type Server } from "http";
 import * as dotenv from 'dotenv';
@@ -5,7 +6,7 @@ import { Resend } from 'resend';
 
 // Database & Schema
 import { db } from "./db";
-import { users, clients, gstReturns, otpCodes, assignmentLogs } from "@shared/schema";
+import { users, clients, gstReturns, otpCodes, assignmentLogs, insertClientSchema } from "@shared/schema";
 
 // Drizzle ORM Helpers
 import { eq, and, ne, desc, sql } from "drizzle-orm";
@@ -258,6 +259,48 @@ app.post("/api/clients", requireAdmin, async (req, res, next) => {
   } catch (error) {
     console.error("Error creating client:", error);
     next(error);
+  }
+});
+
+app.post("/api/clients/with-history", async (req, res) => {
+  try {
+    const { initialHistoryStatus, ...baseData } = req.body;
+    
+    // 1. Validate the base client data
+    const clientData = insertClientSchema.parse(baseData);
+    
+    // 2. Insert the client
+    const [newClient] = await db.insert(clients).values({
+      name: clientData.name,
+      gstin: clientData.gstin,
+      assignedToId: clientData.assignedToId,
+      gstUsername: clientData.gstUsername,
+      gstPassword: clientData.gstPassword,
+      remarks: clientData.remarks,
+      returnStartDate: clientData.returnStartDate, 
+    }).returning();
+
+    // 3. Generate and Bulk Insert History if start date is provided
+    if (clientData.returnStartDate) {
+      const months = generateMonthList(clientData.returnStartDate);
+      const status = initialHistoryStatus || 'Pending';
+
+      const historyRecords = months.map((month) => ({
+        clientId: newClient.id,
+        month: month,
+        gstr1: status,
+        gstr3b: status,
+      }));
+
+      if (historyRecords.length > 0) {
+        await db.insert(gstReturns).values(historyRecords);
+      }
+    }
+
+    res.status(201).json(newClient);
+  } catch (error: any) {
+    console.error("Accelerated Client Creation Error:", error);
+    res.status(400).json({ error: error.message });
   }
 });
 

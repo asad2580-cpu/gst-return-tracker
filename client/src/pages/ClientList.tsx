@@ -1,6 +1,8 @@
 import { BulkImportDialog } from "../components/BulkImportDialog";
+import { HistoryModal } from "../components/HistoryModal"; // or wherever you saved it
 import React, { useMemo, useState } from "react";
-import { Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
+import { History, Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
+//import { History, Eye, EyeOff, Search, Filter, UserCog, Loader2, Plus, Calendar, AlertCircle, CheckCircle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -54,6 +56,8 @@ type NewClient = {
   gstPassword?: string;
   remarks?: string;
   previousReturns?: "none" | "mark_all_previous";
+  initialHistoryStatus?: string;
+  returnStartDate?: string;
 };
 
 const StatusBadge = ({
@@ -78,9 +82,8 @@ const StatusBadge = ({
   return (
     <div className="flex flex-col items-end gap-0.5">
       <Badge
-        className={`${styles[status]} cursor-${
-          canEdit ? "pointer" : "default"
-        } transition-colors border-transparent`}
+        className={`${styles[status]} cursor-${canEdit ? "pointer" : "default"
+          } transition-colors border-transparent`}
         onClick={canEdit ? onClick : undefined}
         data-testid="badge-status"
       >
@@ -142,6 +145,8 @@ export default function ClientList() {
 
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<GSTStatus | "All">("All");
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [selectedClient, setSelectedClient] = useState<ClientWithReturns | null>(null);
   const [isAddClientOpen, setIsAddClientOpen] = useState(false);
   const [staffSearchOpen, setStaffSearchOpen] = useState(false);
   const [staffSearchQuery, setStaffSearchQuery] = useState("");
@@ -154,8 +159,10 @@ export default function ClientList() {
     gstUsername: "",
     gstPassword: "",
     remarks: "",
+    returnStartDate: "",      // Initialize here
+    initialHistoryStatus: "Pending", // Initialize here
   });
-  
+
   // Edit client states
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<ClientWithReturns | null>(null);
@@ -227,47 +234,58 @@ export default function ClientList() {
   });
 
   const editClientMutation = useMutation({
-  mutationFn: async (clientData: ClientWithReturns) => {
-    const res = await apiRequest("PATCH", `/api/clients/${clientData.id}`, {
-      name: clientData.name,
-      gstin: clientData.gstin,
-      assignedToId: clientData.assignedToId,
-      gstUsername: clientData.gstUsername,
-      gstPassword: clientData.gstPassword,
-      remarks: clientData.remarks,
-    });
-    // We return the id so we can use it in onSuccess
-    return { id: clientData.id };
-  },
-  onSuccess: (data) => {
-    // 1. Refresh the main list (Already there)
-    queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+    mutationFn: async (clientData: ClientWithReturns) => {
+      const res = await apiRequest("PATCH", `/api/clients/${clientData.id}`, {
+        name: clientData.name,
+        gstin: clientData.gstin,
+        assignedToId: clientData.assignedToId,
+        gstUsername: clientData.gstUsername,
+        gstPassword: clientData.gstPassword,
+        remarks: clientData.remarks,
+      });
+      // We return the id so we can use it in onSuccess
+      return { id: clientData.id };
+    },
+    onSuccess: (data) => {
+      // 1. Refresh the main list (Already there)
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
 
-    // 2. Refresh the specific history for this client
-    queryClient.invalidateQueries({ 
-      queryKey: [`/api/clients/${data.id}/history`] 
-    });
+      // 2. Refresh the specific history for this client
+      queryClient.invalidateQueries({
+        queryKey: [`/api/clients/${data.id}/history`]
+      });
 
-    setIsEditDialogOpen(false);
-    setEditingClient(null);
-    toast({
-      title: "Client updated",
-      description: "Client details and reassignment history updated.",
-    });
-  },
-  // ... onError remains same
-});
+      setIsEditDialogOpen(false);
+      setEditingClient(null);
+      toast({
+        title: "Client updated",
+        description: "Client details and reassignment history updated.",
+      });
+    },
+    onError: (error: Error) => {
+      // 1. Log the error for debugging
+      console.error("Mutation Error:", error);
 
-  
+      // 2. Show an error toast to the user
+      toast({
+        variant: "destructive", // Assuming you're using a UI library like shadcn/ui
+        title: "Update Failed",
+        description: error.message || "There was a problem updating the client. Please try again.",
+      });
+    },
+  });
+
+
 
   const addClientMutation = useMutation({
     mutationFn: async (clientData: NewClient) => {
-      const res = await apiRequest("POST", "/api/clients", clientData);
-      const data =
-        typeof (res as any)?.json === "function"
-          ? await (res as any).json()
-          : res;
-      return data;
+      // Logic Switch: Hit the dedicated history route if start date is provided
+      const endpoint = clientData.returnStartDate
+        ? "/api/clients/with-history"
+        : "/api/clients";
+
+      const res = await apiRequest("POST", endpoint, clientData);
+      return typeof (res as any)?.json === "function" ? await (res as any).json() : res;
     },
 
     onMutate: async (clientData: NewClient) => {
@@ -305,12 +323,12 @@ export default function ClientList() {
           .filter(({ idx }) => idx < markUntilIndex)
           .map(
             ({ m }) =>
-              ({
-                id: `temp-ret-${tempId}-${m}`,
-                month: m,
-                gstr1: "Filed",
-                gstr3b: "Filed",
-              } as unknown as GstReturn)
+            ({
+              id: `temp-ret-${tempId}-${m}`,
+              month: m,
+              gstr1: "Filed",
+              gstr3b: "Filed",
+            } as unknown as GstReturn)
           );
       }
 
@@ -402,8 +420,8 @@ export default function ClientList() {
       statusFilter === "All"
         ? true
         : client.returns.some(
-            (r) => r.gstr1 === statusFilter || r.gstr3b === statusFilter
-          );
+          (r) => r.gstr1 === statusFilter || r.gstr3b === statusFilter
+        );
 
     return matchesSearch && matchesStatus;
   });
@@ -462,7 +480,7 @@ export default function ClientList() {
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
-    <BulkImportDialog onSuccess={() => refetch()} />
+          <BulkImportDialog onSuccess={() => refetch()} />
           <div className="relative flex-1 sm:w-64">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
@@ -542,11 +560,10 @@ export default function ClientList() {
                     />
                     {newClient.gstin.length > 0 && (
                       <div
-                        className={`flex items-center gap-1 text-xs ${
-                          validateGSTIN(newClient.gstin)
-                            ? "text-green-600"
-                            : "text-red-500"
-                        }`}
+                        className={`flex items-center gap-1 text-xs ${validateGSTIN(newClient.gstin)
+                          ? "text-green-600"
+                          : "text-red-500"
+                          }`}
                       >
                         {validateGSTIN(newClient.gstin) ? (
                           <CheckCircle className="h-3 w-3" />
@@ -655,6 +672,44 @@ export default function ClientList() {
                       marked as Filed for this client.
                     </p>
                   </div>
+                  {/* --- Insert this block inside the Add Client Dialog [cite: 613] --- */}
+                  <div className="space-y-4 border-t pt-4 mt-6">
+                    <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                      Automation Settings
+                    </h3>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="return-start-date">GST Return Start Month</Label>
+                        <Input
+                          id="return-start-date"
+                          type="month"
+                          value={newClient.returnStartDate || ""}
+                          onChange={(e) => setNewClient({ ...newClient, returnStartDate: e.target.value })}
+                        />
+                        <p className="text-[10px] text-muted-foreground">Generates history from this month.</p>
+                      </div>
+
+                      {/* Smart Dropdown: Only appears if a date is selected */}
+                      {newClient.returnStartDate && (
+                        <div className="grid gap-2 animate-in fade-in slide-in-from-top-2">
+                          <Label>Initial Status for History</Label>
+                          <Select
+                            value={newClient.initialHistoryStatus || "Pending"}
+                            onValueChange={(v) => setNewClient({ ...newClient, initialHistoryStatus: v })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Pending">All Pending</SelectItem>
+                              <SelectItem value="Filed">All Filed</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
                   <div className="grid gap-2">
                     <Label>Assign to Staff *</Label>
@@ -671,8 +726,8 @@ export default function ClientList() {
                         >
                           {newClient.assignedToId
                             ? staff?.find(
-                                (s) => s.id === newClient.assignedToId
-                              )?.name
+                              (s) => s.id === newClient.assignedToId
+                            )?.name
                             : "Select staff member..."}
                           <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                         </Button>
@@ -784,6 +839,11 @@ export default function ClientList() {
                     Update client details and GST portal credentials.
                   </DialogDescription>
                 </DialogHeader>
+                <HistoryModal
+                  open={showHistoryModal}
+                  onOpenChange={setShowHistoryModal}
+                  client={selectedClient}
+                />
 
                 <div className="grid gap-4 py-4">
                   <div className="grid gap-2">
@@ -813,11 +873,10 @@ export default function ClientList() {
                     />
                     {editingClient.gstin.length > 0 && (
                       <div
-                        className={`flex items-center gap-1 text-xs ${
-                          validateGSTIN(editingClient.gstin)
-                            ? "text-green-600"
-                            : "text-red-500"
-                        }`}
+                        className={`flex items-center gap-1 text-xs ${validateGSTIN(editingClient.gstin)
+                          ? "text-green-600"
+                          : "text-red-500"
+                          }`}
                       >
                         {validateGSTIN(editingClient.gstin) ? (
                           <CheckCircle className="h-3 w-3" />
@@ -902,8 +961,8 @@ export default function ClientList() {
                         >
                           {editingClient.assignedToId
                             ? staff?.find(
-                                (s) => s.id === editingClient.assignedToId
-                              )?.name
+                              (s) => s.id === editingClient.assignedToId
+                            )?.name
                             : "Select staff member..."}
                           <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                         </Button>
@@ -997,6 +1056,12 @@ export default function ClientList() {
             </Dialog>
           )}
 
+          <HistoryModal
+            open={showHistoryModal}
+            onOpenChange={setShowHistoryModal}
+            client={selectedClient}
+          />
+
           <Card className="border shadow-sm">
             <CardContent className="p-0 overflow-x-auto">
               <Table>
@@ -1022,9 +1087,8 @@ export default function ClientList() {
                       return (
                         <TableHead
                           key={month}
-                          className={`text-center border-l border-border/50 min-w-[100px] ${
-                            isCurrentMonth ? "bg-primary/5" : ""
-                          }`}
+                          className={`text-center border-l border-border/50 min-w-[100px] ${isCurrentMonth ? "bg-primary/5" : ""
+                            }`}
                         >
                           <div className="flex flex-col items-center">
                             <span className="font-semibold">{monthName}</span>
@@ -1056,7 +1120,7 @@ export default function ClientList() {
                                 {client.gstin}
                               </span>
                             </div>
-                            
+
                             {(client.gstUsername || client.gstPassword) && (
                               <div className="flex flex-col gap-1 pt-1 border-t border-border/50">
                                 {client.gstUsername && (
@@ -1088,23 +1152,45 @@ export default function ClientList() {
                               </div>
                             )}
                           </div>
-                          
-                          {isAdmin && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={() => {
-                                setEditingClient(client);
-                                setIsEditDialogOpen(true);
-                              }}
-                            >
-                              <UserCog className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
+
+                          {/**
+                           * Show history button when the client has returns.
+                           * Make it available to all users (admins and non-admins).
+                           */}
+                          <div className="flex items-center gap-1">
+                            {client.returns && client.returns.length > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 w-6 p-0 text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => {
+                                  setSelectedClient(client);
+                                  setShowHistoryModal(true);
+                                }}
+                                title="View Full History"
+                              >
+                                <History className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+
+                            {isAdmin && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => {
+                                  setEditingClient(client);
+                                  setIsEditDialogOpen(true);
+                                }}
+                                title="Edit Client"
+                              >
+                                <UserCog className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </TableCell>
-                                            {isAdmin && (
+                      {isAdmin && (
                         <TableCell>
                           {staff?.find(
                             (s) => s.id === client.assignedToId
