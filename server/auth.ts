@@ -3,7 +3,7 @@ import bcrypt from "bcrypt";
 import { Resend } from 'resend';
 import jwt from "jsonwebtoken";
 import { db } from "./db"; 
-import { users, otpCodes, passwordHistory } from "@shared/schema"; 
+import { users, otpCodes, passwordHistory, deletedStaffLog } from "@shared/schema"; 
 import { eq, and, desc } from "drizzle-orm"; 
 import cookieParser from "cookie-parser";
 
@@ -121,6 +121,16 @@ router.post("/login", async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
+    const [banned] = await db.select()
+      .from(deletedStaffLog)
+      .where(eq(deletedStaffLog.staffEmail, normalizedEmail))
+      .limit(1);
+
+    if (banned) {
+      return res.status(403).json({ 
+        error: `You are no longer the staff of the admin ${banned.adminName}. Please register again.` 
+      });
+    }
     const results = await db.select().from(users).where(eq(users.username, normalizedEmail)).limit(1);
     const user = results[0];
 
@@ -151,6 +161,17 @@ router.post("/google-login", async (req: Request, res: Response) => {
   try {
     const { email, name, photoURL } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
+
+    const [banned] = await db.select()
+      .from(deletedStaffLog)
+      .where(eq(deletedStaffLog.staffEmail, normalizedEmail))
+      .limit(1);
+
+    if (banned) {
+      return res.status(403).json({ 
+        error: `You are no longer the staff of the admin ${banned.adminName}. Please register again.` 
+      });
+    }
 
     // Check if user exists
     let results = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);

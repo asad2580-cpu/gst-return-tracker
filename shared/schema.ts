@@ -29,6 +29,16 @@ export const deletedClientsLog = pgTable("deleted_clients_log", {
   deletedAt: timestamp("deleted_at").defaultNow().notNull(),
 });
 
+// Add to shared/schema.ts
+export const deletedStaffLog = pgTable("deleted_staff_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  staffEmail: text("staff_email").notNull(), // This was missing!
+  staffName: text("staff_name").notNull(),
+  adminName: text("admin_name").notNull(),
+  reason: text("reason").notNull(),
+  deletedAt: timestamp("deleted_at").defaultNow().notNull(),
+});
+
 export const passwordHistory = pgTable("password_history", {
   id: serial("id").primaryKey(),
   userId: uuid("user_id").references(() => users.id, { onDelete: 'cascade' }).notNull(),
@@ -135,28 +145,13 @@ export const updateGstReturnSchema = z.object({
   gstr3b: z.enum(['Pending', 'Filed', 'Late']).optional(),
 });
 
+// 2. Make staffId nullable in assignmentLogs
 export const assignmentLogs = pgTable("assignment_logs", {
-  id: serial("id").primaryKey(),
-  
-  // 1. CHANGE THIS from text() to uuid()
-  clientId: uuid("client_id")
-    .references(() => clients.id, { onDelete: 'cascade' })
-    .notNull(),
-    
-  // 2. CHANGE THIS from text() to uuid()
-  fromStaffId: uuid("from_staff_id")
-    .references(() => users.id), 
-    
-  // 3. CHANGE THIS from text() to uuid()
-  toStaffId: uuid("to_staff_id")
-    .references(() => users.id)
-    .notNull(),
-    
-  // 4. CHANGE THIS from text() to uuid()
-  adminId: uuid("admin_id")
-    .references(() => users.id)
-    .notNull(),
-    
+  id: uuid("id").primaryKey().defaultRandom(),
+  clientId: uuid("client_id").references(() => clients.id).notNull(),
+  fromStaffId: uuid("from_staff_id").references(() => users.id),
+  toStaffId: uuid("to_staff_id").references(() => users.id), // Remove .notNull()
+  adminId: uuid("admin_id").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
