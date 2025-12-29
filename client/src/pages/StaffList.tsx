@@ -41,6 +41,9 @@ export default function StaffList() {
   const [staffToWarning, setStaffToWarning] = useState<User | null>(null);
   const [staffToReassign, setStaffToReassign] = useState<User | null>(null);
   const [deletionReason, setDeletionReason] = useState("");
+  const [pendingReassignments, setPendingReassignments] =
+    useState<Record<string, string>>({});
+
 
   // --- 3. Mutations & Handlers ---
   const deleteWorkflowMutation = useMutation({
@@ -60,23 +63,25 @@ export default function StaffList() {
     }
   });
 
-  const handleProceedFromWarning = (reason: string) => {
+  const handleProceedFromWarning = (
+    reason: string,
+    reassignments: Record<string, string>
+  ) => {
     if (!staffToWarning) return;
 
     setDeletionReason(reason);
-    const assignedClients = (clients || []).filter(c => c.assignedToId === staffToWarning.id);
 
-    if (assignedClients.length > 0) {
-      // Step 2: Open Reassignment Modal
+    if (Object.keys(reassignments).length > 0) {
       setStaffToReassign(staffToWarning);
+      setPendingReassignments(reassignments);
     } else {
-      // Direct Delete: No clients to move
       deleteWorkflowMutation.mutate({
         staffId: staffToWarning.id,
-        reason: reason,
-        reassignments: {}
+        reason,
+        reassignments: {},
       });
     }
+
     setStaffToWarning(null);
   };
 
@@ -172,8 +177,9 @@ export default function StaffList() {
       {staffToWarning && (
         <DeleteStaffWorkflow
           staff={staffToWarning}
+          clients={clients}
+          otherStaff={staffMembers.filter((s) => s.id !== staffToWarning.id)}
           open={!!staffToWarning}
-          // Change (open) to (open: boolean)
           onOpenChange={(open: boolean) => !open && setStaffToWarning(null)}
           onProceed={handleProceedFromWarning}
         />
@@ -184,12 +190,11 @@ export default function StaffList() {
         <StaffReassignmentModal
           staff={staffToReassign}
           reason={deletionReason}
+          reassignments={pendingReassignments}
           open={!!staffToReassign}
-          // Change (open) to (open: boolean)
           onOpenChange={(open: boolean) => !open && setStaffToReassign(null)}
-          clients={(clients || []).filter(c => c.assignedToId === staffToReassign.id)}
-          otherStaff={staffMembers.filter(s => s.id !== staffToReassign.id)}
         />
+
       )}
     </div>
   );

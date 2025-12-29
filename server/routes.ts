@@ -746,7 +746,7 @@ export async function registerRoutes(
   });
 
   app.post("/api/staff/:id/delete-workflow", async (req: Request, res: Response) => {
-  // ---- Auth checks (unchanged logic) ----
+  // ---------- AUTH ----------
   const isAuthed =
     typeof req.isAuthenticated === "function" ? req.isAuthenticated() : false;
 
@@ -758,12 +758,13 @@ export async function registerRoutes(
     return res.status(403).json({ message: "Forbidden" });
   }
 
+  // ---------- INPUT ----------
   const staffId = req.params.id;
   const { reason, reassignments = {} } = req.body;
   const adminName = req.user.name || "Admin";
 
   try {
-    // ---- 1. Ensure staff exists ----
+    // ---------- STAFF EXISTS ----------
     const [staff] = await db
       .select()
       .from(users)
@@ -773,24 +774,41 @@ export async function registerRoutes(
       return res.status(404).json({ message: "Staff not found" });
     }
 
-    // ---- 2. Check assigned clients (IMPORTANT) ----
+    // ---------- FIND ASSIGNED CLIENTS ----------
     const assignedClients = await db
       .select({ id: clients.id })
       .from(clients)
       .where(eq(clients.assignedToId, staffId));
 
+    /**
+     * 🔑 WORKFLOW GATE
+     * If clients exist AND no reassignment yet:
+     * → tell frontend to open reassignment modal
+     */
+    if (assignedClients.length > 0 && Object.keys(reassignments).length === 0) {
+      return res.status(409).json({
+        code: "REASSIGN_REQUIRED",
+        staffId,
+        clients: assignedClients,
+      });
+    }
+
+    /**
+     * 🔒 FINAL VALIDATION
+     * If reassignment count mismatch → hard error
+     */
     if (
       assignedClients.length > 0 &&
       Object.keys(reassignments).length !== assignedClients.length
     ) {
       return res.status(400).json({
-        message: "All assigned clients must be reassigned before deleting staff",
+        message: "All clients must be reassigned before deletion",
       });
     }
 
-    // ---- 3. Transaction (single source of truth) ----
+    // ---------- TRANSACTION ----------
     await db.transaction(async (tx) => {
-      // 3.1 Log deletion (your existing logic preserved)
+      // 1️⃣ Log deletion
       await tx.insert(deletedStaffLog).values({
         staffEmail: staff.username || "Unknown",
         staffName: staff.name || "Unknown",
@@ -798,7 +816,7 @@ export async function registerRoutes(
         reason,
       });
 
-      // 3.2 Reassign clients FIRST (required by FK constraint)
+      // 2️⃣ Reassign clients (must happen before delete)
       for (const [clientId, newStaffId] of Object.entries(reassignments)) {
         await tx
           .update(clients)
@@ -806,7 +824,7 @@ export async function registerRoutes(
           .where(eq(clients.id, clientId));
       }
 
-      // 3.3 Clean assignment logs (keep history, avoid FK issues)
+      // 3️⃣ Clean assignment logs (keep history, avoid FK issues)
       await tx
         .update(assignmentLogs)
         .set({ fromStaffId: null })
@@ -817,7 +835,7 @@ export async function registerRoutes(
         .set({ toStaffId: null })
         .where(eq(assignmentLogs.toStaffId, staffId));
 
-      // 3.4 Delete staff LAST (DB now guarantees safety)
+      // 4️⃣ Delete staff LAST
       await tx.delete(users).where(eq(users.id, staffId));
     });
 
@@ -830,6 +848,7 @@ export async function registerRoutes(
     });
   }
 });
+
 
 
   // GET only the staff created by the logged-in Admin
