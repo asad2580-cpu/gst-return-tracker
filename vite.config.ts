@@ -6,7 +6,7 @@ import path from "path";
 export default defineConfig({
   plugins: [
     react(),
-    tailwindcss(), // This is the Vite plugin, not PostCSS
+    tailwindcss(),
   ],
   resolve: {
     alias: {
