@@ -181,6 +181,37 @@ export default function Login() {
     }
   };
 
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    loginMutation.mutate(loginForm, {
+      onSuccess: () => {
+        queryClient.removeQueries({ queryKey: ["/api/clients"] });
+        setLocation("/dashboard");
+      },
+    });
+  };
+
+  // 3. FIX: Define handleRegister
+  const handleRegister = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // Verification checks
+    if (!isSelfVerified) {
+      return toast({ title: "Verify Email", description: "Please verify your own OTP first.", variant: "destructive" });
+    }
+    
+    registerMutation.mutate(registerForm, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+        toast({ title: "Account Created", description: "Welcome to FileDX!" });
+        setLocation("/dashboard");
+      },
+      onError: (error: any) => {
+        toast({ title: "Registration Failed", description: error.message, variant: "destructive" });
+      }
+    });
+  };
+
   const handleGoogleAuth = async (mode: "login" | "register") => {
   setIsGoogleLoading(true);
   try {
