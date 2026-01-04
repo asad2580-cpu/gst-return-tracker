@@ -1,38 +1,18 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "fs/promises";
+import { rm, readFile, mkdir, readdir, rename } from "fs/promises";
+import path from "path";
 
-// server deps to bundle to reduce openat(2) syscalls
-// which helps cold start times
 const allowlist = [
-  "@google/generative-ai",
-  "axios",
-  "connect-pg-simple",
-  "cors",
-  "date-fns",
-  "drizzle-orm",
-  "drizzle-zod",
-  "express",
-  "express-rate-limit",
-  "express-session",
-  "jsonwebtoken",
-  "memorystore",
-  "multer",
-  "nanoid",
-  "nodemailer",
-  "openai",
-  "passport",
-  "passport-local",
-  "pg",
-  "stripe",
-  "uuid",
-  "ws",
-  "xlsx",
-  "zod",
-  "zod-validation-error",
+  "@google/generative-ai", "axios", "connect-pg-simple", "cors", "date-fns",
+  "drizzle-orm", "drizzle-zod", "express", "express-rate-limit",
+  "express-session", "jsonwebtoken", "memorystore", "multer", "nanoid",
+  "nodemailer", "openai", "passport", "passport-local", "pg", "stripe",
+  "uuid", "ws", "xlsx", "zod", "zod-validation-error",
 ];
 
 async function buildAll() {
+  // 1. Clean start
   await rm("dist", { recursive: true, force: true });
 
   console.log("building client...");
@@ -52,18 +32,31 @@ async function buildAll() {
     bundle: true,
     format: "cjs",
     outfile: "dist/index.cjs",
-    define: {
-      "process.env.NODE_ENV": '"production"',
-    },
+    define: { "process.env.NODE_ENV": '"production"' },
     minify: true,
     external: externals,
     logLevel: "info",
   });
 
   console.log("Ensuring directory structure for production...");
-  // This ensures the folders exist so serveStatic doesn't throw an error
-  const fs = await import("fs/promises");
-  await fs.mkdir("dist/public", { recursive: true });
+  
+  // 2. Create the target public folder
+  const distPublic = path.resolve("dist", "public");
+  await mkdir(distPublic, { recursive: true });
+
+  // 3. Migration Logic: Move everything except index.cjs into dist/public
+  const distFiles = await readdir("dist");
+  for (const file of distFiles) {
+    const oldPath = path.join("dist", file);
+    const newPath = path.join(distPublic, file);
+
+    // Don't move the public folder into itself or move the server file
+    if (file !== "public" && file !== "index.cjs") {
+      await rename(oldPath, newPath);
+      console.log(`Moved ${file} to dist/public/`);
+    }
+  }
+  console.log("Build and organization complete.");
 }
 
 buildAll().catch((err) => {
