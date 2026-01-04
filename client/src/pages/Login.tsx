@@ -32,6 +32,7 @@ import { signInWithPopup } from "firebase/auth";
 import { auth, googleProvider } from "../firebase";
 
 export default function Login() {
+  const prefill = window.history.state?.prefill;
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { user, loginMutation, registerMutation } = useAuth();
@@ -54,14 +55,25 @@ export default function Login() {
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
 
   const [registerForm, setRegisterForm] = useState({
-    name: "",
-    email: "",
+    name: prefill?.name || "",
+    email: prefill?.email || "",
     password: "",
-    role: "admin" as "admin" | "staff",
+    role: "staff" as "admin" | "staff",
+    otp: "",
     adminEmail: "",
-    otp: "",      // Self Identity OTP
-    adminOtp: "", // Admin Authorization OTP
+    adminOtp: ""
   });
+
+  // 2. Effect to update form if prefill changes (optional but helpful)
+  useEffect(() => {
+    if (prefill) {
+      setRegisterForm(prev => ({
+        ...prev,
+        name: prefill.name,
+        email: prefill.email
+      }));
+    }
+  }, [prefill]);
 
   // Separate Timer States
   const [selfTimer, setSelfTimer] = useState(0);
@@ -170,11 +182,13 @@ export default function Login() {
   };
 
   const handleGoogleAuth = async (mode: "login" | "register") => {
-    setIsGoogleLoading(true);
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const fbUser = result.user;
+  setIsGoogleLoading(true);
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    const fbUser = result.user;
 
+    // Use a try-catch block for the API request specifically to handle the 404
+    try {
       const data = await apiRequest("POST", "/auth/google-login", {
         email: fbUser.email,
         name: fbUser.displayName,
@@ -183,56 +197,39 @@ export default function Login() {
       localStorage.setItem("accessToken", data.accessToken);
       queryClient.setQueryData(["/api/auth/me"], data.user);
       toast({ title: "Welcome!", description: `Logged in as ${data.user.name}` });
-      setLocation("/");
+      setLocation("/dashboard");
     } catch (error: any) {
-      toast({ title: "Google Auth Failed", description: error.message, variant: "destructive" });
-    } finally {
-      setIsGoogleLoading(false);
-    }
-  };
+      // If the error is our 404 "Not Found", handle pre-fill
+      if (error.status === 404) {
+        const prefillData = error.prefill; // apiRequest needs to pass this through
+        
+        // 1. Update the register form state with Google data
+        setRegisterForm((prev) => ({
+          ...prev,
+          email: fbUser.email || "",
+          name: fbUser.displayName || "",
+        }));
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    loginMutation.mutate(loginForm, {
-      onSuccess: () => {
-        queryClient.removeQueries({ queryKey: ["/api/clients"] });
-        setLocation("/dashboard");
-      },
-    });
-  };
+        // 2. Show the warning toast
+        toast({ 
+          title: "Account Not Found", 
+          description: "Kindly register first. We've pre-filled your details.", 
+          variant: "destructive" 
+        });
 
-  const handleRegister = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    // 1. Validation: Ensure we don't even try if the UI hasn't been verified
-    if (!isSelfVerified) {
-      return toast({ title: "Verify Email", description: "Please verify your own OTP first.", variant: "destructive" });
-    }
-    if (registerForm.role === 'staff' && !isAdminVerified) {
-      return toast({ title: "Admin Auth Required", description: "Please get authorization from your manager.", variant: "destructive" });
-    }
-
-    // 2. Explicitly pass all fields to the mutation
-    registerMutation.mutate({
-      name: registerForm.name,
-      email: registerForm.email,
-      password: registerForm.password,
-      role: registerForm.role,
-      otp: registerForm.otp,           // Ensure this is in your state
-      adminEmail: registerForm.adminEmail,
-      adminOtp: registerForm.adminOtp  // Ensure this is in your state
-    }, {
-      onSuccess: () => {
-        // This invalidates the staff list so they show up immediately
-        queryClient.invalidateQueries({ queryKey: ["/api/users"] });
-        toast({ title: "Account Created", description: "Welcome to FileDX!" });
-        setLocation("/dashboard");
-      },
-      onError: (error: any) => {
-        toast({ title: "Registration Failed", description: error.message, variant: "destructive" });
+        // 3. Switch the tab to registration (assuming you use a state for tabs)
+        // setActiveTab("register"); 
+      } else {
+        throw error; // Pass other errors to the main catch
       }
-    });
-  };
+    }
+  } catch (error: any) {
+    toast({ title: "Google Auth Failed", description: error.message, variant: "destructive" });
+  } finally {
+    setIsGoogleLoading(false);
+  }
+};
+  
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4 relative">

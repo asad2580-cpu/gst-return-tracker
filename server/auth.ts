@@ -162,6 +162,7 @@ router.post("/google-login", async (req: Request, res: Response) => {
     const { email, name, photoURL } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
 
+    // 1. Check if they were previously deleted (Banned)
     const [banned] = await db.select()
       .from(deletedStaffLog)
       .where(eq(deletedStaffLog.staffEmail, normalizedEmail))
@@ -169,26 +170,23 @@ router.post("/google-login", async (req: Request, res: Response) => {
 
     if (banned) {
       return res.status(403).json({ 
-        error: `You are no longer the staff of the admin ${banned.adminName}. Please register again.` 
+        error: `Account suspended. Previously staff of ${banned.adminName}. Please register again.` 
       });
     }
 
-    // Check if user exists
+    // 2. Check if user exists in the database
     let results = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
     let user = results[0];
 
-    // If user doesn't exist, create a new "Staff" account for them
+    // 3. LOGIC CHANGE: If user doesn't exist, do NOT create.
     if (!user) {
-      const [newUser] = await db.insert(users).values({
-        username: normalizedEmail,
-        email: normalizedEmail,
-        password: "GOOGLE_AUTH_USER", // Dummy password
-        name: name || "Google User",
-        role: "admin", // Default role
-      }).returning();
-      user = newUser;
+      return res.status(404).json({
+        error: "Kindly register first",
+        prefill: { email: normalizedEmail, name: name || "" }
+      });
     }
 
+    // 4. If user exists, proceed with standard token generation
     const access = signAccess({ sub: user.id });
     const refresh = signRefresh({ sub: user.id });
 
