@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile, mkdir, readdir, rename } from "fs/promises";
+import { rm, readFile, mkdir, readdir, rename, stat } from "fs/promises";
 import path from "path";
 
 const allowlist = [
@@ -12,54 +12,56 @@ const allowlist = [
 ];
 
 async function buildAll() {
-  // 1. Clean start
-  await rm("dist", { recursive: true, force: true });
+  const root = process.cwd();
+  const distPath = path.join(root, "dist");
+  const publicPath = path.join(distPath, "public");
 
-  console.log("building client...");
+  // Step 1: Clean slate
+  console.log("Cleaning dist directory...");
+  await rm(distPath, { recursive: true, force: true });
+  await mkdir(distPath, { recursive: true });
+
+  // Step 2: Build Frontend
+  console.log("Building client (Vite)...");
   await viteBuild();
 
-  console.log("building server...");
-  const pkg = JSON.parse(await readFile("package.json", "utf-8"));
-  const allDeps = [
-    ...Object.keys(pkg.dependencies || {}),
-    ...Object.keys(pkg.devDependencies || {}),
-  ];
+  // Step 3: Build Backend
+  console.log("Building server (Esbuild)...");
+  const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf-8"));
+  const allDeps = [...Object.keys(pkg.dependencies || {}), ...Object.keys(pkg.devDependencies || {})];
   const externals = allDeps.filter((dep) => !allowlist.includes(dep));
 
   await esbuild({
-    entryPoints: ["server/index.ts"],
+    entryPoints: [path.join(root, "server", "index.ts")],
     platform: "node",
     bundle: true,
     format: "cjs",
-    outfile: "dist/index.cjs",
+    outfile: path.join(distPath, "index.cjs"),
     define: { "process.env.NODE_ENV": '"production"' },
     minify: true,
     external: externals,
     logLevel: "info",
   });
 
+  // Step 4: Final Folder Organization
   console.log("Ensuring directory structure for production...");
-  
-  // 2. Create the target public folder
-  const distPublic = path.resolve("dist", "public");
-  await mkdir(distPublic, { recursive: true });
+  await mkdir(publicPath, { recursive: true });
 
-  // 3. Migration Logic: Move everything except index.cjs into dist/public
-  const distFiles = await readdir("dist");
-  for (const file of distFiles) {
-    const oldPath = path.join("dist", file);
-    const newPath = path.join(distPublic, file);
+  const topLevelFiles = await readdir(distPath);
+  for (const file of topLevelFiles) {
+    const oldPath = path.join(distPath, file);
+    const newPath = path.join(publicPath, file);
 
-    // Don't move the public folder into itself or move the server file
-    if (file !== "public" && file !== "index.cjs") {
+    // If it's not the server file and not the public folder itself, move it inside public
+    if (file !== "index.cjs" && file !== "public") {
       await rename(oldPath, newPath);
-      console.log(`Moved ${file} to dist/public/`);
+      console.log(`✓ Moved ${file} to dist/public/`);
     }
   }
-  console.log("Build and organization complete.");
+  console.log("Final Blow Delivered: Build complete.");
 }
 
 buildAll().catch((err) => {
-  console.error(err);
+  console.error("Build failed:", err);
   process.exit(1);
 });
