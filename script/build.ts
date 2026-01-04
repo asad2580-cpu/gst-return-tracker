@@ -59,6 +59,11 @@ async function buildAll() {
     external: externals,
     logLevel: "info",
   });
+
+  console.log("Ensuring directory structure for production...");
+  // This ensures the folders exist so serveStatic doesn't throw an error
+  const fs = await import("fs/promises");
+  await fs.mkdir("dist/public", { recursive: true });
 }
 
 buildAll().catch((err) => {
