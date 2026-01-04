@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile, mkdir, readdir, rename, stat } from "fs/promises";
+import { rm, readFile, mkdir, readdir, copyFile, unlink, stat } from "fs/promises";
 import path from "path";
 
 const allowlist = [
@@ -11,21 +11,31 @@ const allowlist = [
   "uuid", "ws", "xlsx", "zod", "zod-validation-error",
 ];
 
+async function copyDir(src: string, dest: string) {
+  await mkdir(dest, { recursive: true });
+  const entries = await readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyDir(srcPath, destPath);
+    } else {
+      await copyFile(srcPath, destPath);
+    }
+  }
+}
+
 async function buildAll() {
   const root = process.cwd();
   const distPath = path.join(root, "dist");
   const publicPath = path.join(distPath, "public");
 
-  // Step 1: Clean slate
-  console.log("Cleaning dist directory...");
   await rm(distPath, { recursive: true, force: true });
   await mkdir(distPath, { recursive: true });
 
-  // Step 2: Build Frontend
   console.log("Building client (Vite)...");
   await viteBuild();
 
-  // Step 3: Build Backend
   console.log("Building server (Esbuild)...");
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf-8"));
   const allDeps = [...Object.keys(pkg.dependencies || {}), ...Object.keys(pkg.devDependencies || {})];
@@ -43,22 +53,29 @@ async function buildAll() {
     logLevel: "info",
   });
 
-  // Step 4: Final Folder Organization
-  console.log("Ensuring directory structure for production...");
+  console.log("Re-organizing files for Render...");
   await mkdir(publicPath, { recursive: true });
 
-  const topLevelFiles = await readdir(distPath);
-  for (const file of topLevelFiles) {
-    const oldPath = path.join(distPath, file);
-    const newPath = path.join(publicPath, file);
-
-    // If it's not the server file and not the public folder itself, move it inside public
+  const files = await readdir(distPath);
+  for (const file of files) {
     if (file !== "index.cjs" && file !== "public") {
-      await rename(oldPath, newPath);
-      console.log(`✓ Moved ${file} to dist/public/`);
+      const src = path.join(distPath, file);
+      const dest = path.join(publicPath, file);
+      
+      const fileStat = await stat(src);
+      if (fileStat.isDirectory()) {
+        await copyDir(src, dest);
+        await rm(src, { recursive: true, force: true });
+      } else {
+        await copyFile(src, dest);
+        await unlink(src);
+      }
     }
   }
-  console.log("Final Blow Delivered: Build complete.");
+
+  // A tiny wait to ensure file system sync
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  console.log("Build and organization complete.");
 }
 
 buildAll().catch((err) => {
