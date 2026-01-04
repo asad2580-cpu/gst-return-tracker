@@ -9,7 +9,7 @@ import { db } from "./db";
 import { users, clients, gstReturns, otpCodes, assignmentLogs, insertClientSchema, deletedClientsLog, deletedStaffLog } from "@shared/schema";
 
 // Drizzle ORM Helpers
-import { eq, and, ne, desc, sql } from "drizzle-orm";
+import { eq, and, ne, desc, sql, isNull, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 // Auth Middleware
@@ -149,25 +149,24 @@ export async function registerRoutes(
   // Get all clients (admin sees all, staff sees only assigned)
   app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
   try {
-    const user = req.user;
+    const user = req.user; // This comes from your attachUserFromHeader middleware
     let clientsList;
 
-    // 1. Fetch based on Ownership (Admin) or Assignment (Staff)
     if (user.role === 'admin') {
-      // Admin ONLY sees clients they created
+      // ONLY fetch clients created by THIS specific admin
       clientsList = await db
         .select()
         .from(clients)
         .where(eq(clients.createdBy, user.id));
     } else {
-      // Staff only sees their assigned clients
+      // Staff only sees their specifically assigned clients
       clientsList = await db
         .select()
         .from(clients)
         .where(eq(clients.assignedToId, user.id));
     }
 
-    // 2. Fetch returns for each filtered client
+    // Fetch returns for the filtered list
     const clientsWithReturns = await Promise.all(
       clientsList.map(async (client) => {
         const returns = await db
@@ -260,25 +259,26 @@ export async function registerRoutes(
   }
 });
 
-  app.post("/api/clients/with-history", async (req, res) => {
+  app.post("/api/clients/with-history", requireAdmin, async (req: any, res: any) => {
     try {
       const { initialHistoryStatus, ...baseData } = req.body;
 
-      // 1. Validate the base client data
+      // Validate the base client data
       const clientData = insertClientSchema.parse(baseData);
 
-      // 2. Insert the client
+      // Insert the client with the owner ID (req.user.id)
       const [newClient] = await db.insert(clients).values({
         name: clientData.name,
-        gstin: clientData.gstin,
+        gstin: clientData.gstin.toUpperCase(),
         assignedToId: clientData.assignedToId,
         gstUsername: clientData.gstUsername,
         gstPassword: clientData.gstPassword,
         remarks: clientData.remarks,
         returnStartDate: clientData.returnStartDate,
+        createdBy: req.user.id, // <--- CRITICAL FIX: Links to Admin
       }).returning();
 
-      // 3. Generate and Bulk Insert History if start date is provided
+      // Generate and Bulk Insert History
       if (clientData.returnStartDate) {
         const months = generateMonthList(clientData.returnStartDate);
         const status = initialHistoryStatus || 'Pending';
@@ -303,26 +303,21 @@ export async function registerRoutes(
   });
 
   // Bulk Create Clients (Admin only)
-  app.post("/api/clients/bulk", requireAdmin, async (req, res, next) => {
+  app.post("/api/clients/bulk", requireAdmin, async (req: any, res, next) => {
     try {
       const clientsData = req.body;
       if (!Array.isArray(clientsData)) {
         return res.status(400).json("Data must be an array of clients");
       }
 
-      // 1. Fetch all staff to map Email -> ID (Drizzle Async)
       const staffRows = await db
         .select({ id: users.id, email: users.email })
         .from(users)
         .where(eq(users.role, 'staff'));
 
       const staffMap = new Map(staffRows.map(s => [s.email.toLowerCase().trim(), s.id]));
-
-      // 2. Prepare GSTIN regex
       const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
-      // 3. START POSTGRES TRANSACTION
-      // In Drizzle, we use await db.transaction(async (tx) => { ... })
       const insertedIds = await db.transaction(async (tx) => {
         const results = [];
 
@@ -330,56 +325,34 @@ export async function registerRoutes(
           const name = item.name;
           const gstin = item.gstin?.toUpperCase().trim();
           const staffEmail = item.staffEmail?.toLowerCase().trim();
-          const { gstUsername, gstPassword, remarks } = item;
-
-          // Validation
           const assignedToId = staffMap.get(staffEmail);
-          if (!assignedToId) {
-            throw new Error(`Staff email "${item.staffEmail}" not found. Please ensure this staff exists.`);
-          }
 
-          if (!gstin || !gstinRegex.test(gstin)) {
-            throw new Error(`Invalid GSTIN format for client "${name}": ${item.gstin}`);
-          }
+          if (!assignedToId) throw new Error(`Staff email "${item.staffEmail}" not found.`);
+          if (!gstin || !gstinRegex.test(gstin)) throw new Error(`Invalid GSTIN: ${gstin}`);
 
-          // Check for existing GSTIN
-          const existing = await tx
-            .select({ name: clients.name })
-            .from(clients)
-            .where(eq(clients.gstin, gstin))
-            .limit(1);
-
-          if (existing[0]) {
-            throw new Error(`GSTIN ${gstin} is already assigned to "${existing[0].name}"`);
-          }
-
-          // Insert Client and get ID
           const [newClient] = await tx.insert(clients).values({
             name,
             gstin,
             assignedToId,
-            gstUsername: gstUsername || null,
-            gstPassword: gstPassword || null,
-            remarks: remarks || null,
+            gstUsername: item.gstUsername || null,
+            gstPassword: item.gstPassword || null,
+            remarks: item.remarks || null,
+            createdBy: req.user.id, // <--- CRITICAL FIX: Links to Admin
           }).returning({ id: clients.id });
 
-          const clientId = newClient.id;
-
-          // Generate 3 months of returns
+          // 3 months default returns
           const currentDate = new Date();
           for (let i = 0; i < 3; i++) {
             const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
             const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
             await tx.insert(gstReturns).values({
-              clientId: clientId,
-              month: month,
+              clientId: newClient.id,
+              month,
               gstr1: 'Pending',
               gstr3b: 'Pending'
             });
           }
-
-          results.push(clientId);
+          results.push(newClient.id);
         }
         return results;
       });
@@ -387,7 +360,6 @@ export async function registerRoutes(
       res.status(201).json({ message: `Successfully imported ${insertedIds.length} clients` });
     } catch (error: any) {
       console.error("Bulk import failed:", error);
-      // Drizzle transactions automatically rollback if an error is thrown inside
       res.status(400).json({ error: error.message });
     }
   });
