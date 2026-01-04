@@ -148,119 +148,117 @@ export async function registerRoutes(
 
   // Get all clients (admin sees all, staff sees only assigned)
   app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
-    try {
-      const user = req.user;
-      let clientsList;
+  try {
+    const user = req.user;
+    let clientsList;
 
-      // 1. Fetch the list of clients based on Role
-      if (user.role === 'admin') {
-        // Admin sees ALL clients
-        clientsList = await db.select().from(clients);
-      } else {
-        // Staff only sees their assigned clients
-        clientsList = await db
+    // 1. Fetch based on Ownership (Admin) or Assignment (Staff)
+    if (user.role === 'admin') {
+      // Admin ONLY sees clients they created
+      clientsList = await db
+        .select()
+        .from(clients)
+        .where(eq(clients.createdBy, user.id));
+    } else {
+      // Staff only sees their assigned clients
+      clientsList = await db
+        .select()
+        .from(clients)
+        .where(eq(clients.assignedToId, user.id));
+    }
+
+    // 2. Fetch returns for each filtered client
+    const clientsWithReturns = await Promise.all(
+      clientsList.map(async (client) => {
+        const returns = await db
           .select()
-          .from(clients)
-          .where(eq(clients.assignedToId, user.id));
-      }
+          .from(gstReturns)
+          .where(eq(gstReturns.clientId, client.id));
 
-      // 2. Fetch returns for each client
-      // Since we use 'await', we use Promise.all to run these in parallel
-      const clientsWithReturns = await Promise.all(
-        clientsList.map(async (client) => {
-          const returns = await db
-            .select()
-            .from(gstReturns)
-            .where(eq(gstReturns.clientId, client.id));
+        return {
+          ...client,
+          returns
+        };
+      })
+    );
 
-          return {
-            ...client,
-            returns
-          };
-        })
-      );
-
-      res.json(clientsWithReturns);
-    } catch (error) {
-      console.error("Error fetching clients:", error);
-      next(error);
-    }
-  });
+    res.json(clientsWithReturns);
+  } catch (error) {
+    console.error("Error fetching clients:", error);
+    next(error);
+  }
+});
 
   // Create a new client (admin only)
   // Create a new client (admin only)
-  app.post("/api/clients", requireAdmin, async (req, res, next) => {
-    try {
-      const { name, gstin, assignedToId, gstUsername, gstPassword, remarks, previousReturns } = req.body;
+  app.post("/api/clients", requireAdmin, async (req: any, res: any, next: any) => {
+  try {
+    const { name, gstin, assignedToId, gstUsername, gstPassword, remarks, previousReturns } = req.body;
 
-      // 1. Validation
-      if (!name || !gstin || !assignedToId) {
-        return res.status(400).json("Missing required fields: name, gstin, or assignedToId");
-      }
-
-      const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-      if (!gstinRegex.test(gstin.toUpperCase())) {
-        return res.status(400).json("Invalid GSTIN format");
-      }
-
-      // 2. Check existing GSTIN (Asynchronous)
-      const existing = await db.select().from(clients).where(eq(clients.gstin, gstin.toUpperCase())).limit(1);
-      if (existing[0]) {
-        return res.status(400).json("A client with this GSTIN already exists");
-      }
-
-      // 3. Start Transaction
-      const finalData = await db.transaction(async (tx) => {
-        // Insert Client and get the new record back immediately with .returning()
-        const [newClient] = await tx.insert(clients).values({
-          name,
-          gstin: gstin.toUpperCase(),
-          assignedToId,
-          gstUsername: gstUsername || null,
-          gstPassword: gstPassword || null,
-          remarks: remarks || null,
-        }).returning();
-
-        // Logic for generating months
-        const currentDate = new Date();
-        const returnPeriodDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-        const currentReturnPeriodStr = `${returnPeriodDate.getFullYear()}-${String(returnPeriodDate.getMonth() + 1).padStart(2, '0')}`;
-
-        const months = [];
-        for (let i = 0; i < 3; i++) {
-          const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-          months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-        }
-
-        // Insert Returns
-        for (const month of months) {
-          let status: "Pending" | "Filed" | "Late" = 'Pending';
-          if (previousReturns === 'mark_all_previous') {
-            const [y, m] = month.split('-').map(Number);
-            const [cy, cm] = currentReturnPeriodStr.split('-').map(Number);
-            if (new Date(y, m - 1) < new Date(cy, cm - 1)) status = 'Filed';
-          }
-
-          await tx.insert(gstReturns).values({
-            clientId: newClient.id,
-            month,
-            gstr1: status,
-            gstr3b: status,
-          });
-        }
-
-        // Fetch the newly created returns to return to the frontend
-        const returns = await tx.select().from(gstReturns).where(eq(gstReturns.clientId, newClient.id));
-
-        return { ...newClient, returns };
-      });
-
-      res.status(201).json(finalData);
-    } catch (error) {
-      console.error("Error creating client:", error);
-      next(error);
+    // 1. Validation
+    if (!name || !gstin || !assignedToId) {
+      return res.status(400).json("Missing required fields: name, gstin, or assignedToId");
     }
-  });
+
+    const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+    if (!gstinRegex.test(gstin.toUpperCase())) {
+      return res.status(400).json("Invalid GSTIN format");
+    }
+
+    // 2. Check existing GSTIN
+    const existing = await db.select().from(clients).where(eq(clients.gstin, gstin.toUpperCase())).limit(1);
+    if (existing[0]) {
+      return res.status(400).json("A client with this GSTIN already exists");
+    }
+
+    // 3. Start Transaction
+    const finalData = await db.transaction(async (tx) => {
+      // Link the new client to the Admin who created it
+      const [newClient] = await tx.insert(clients).values({
+        name,
+        gstin: gstin.toUpperCase(),
+        assignedToId,
+        gstUsername: gstUsername || null,
+        gstPassword: gstPassword || null,
+        remarks: remarks || null,
+        createdBy: req.user.id, // THE CRITICAL FIX: Link to current Admin
+      }).returning();
+
+      // Generation logic for months (last 3 months)
+      const currentDate = new Date();
+      const currentReturnPeriodStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth()).padStart(2, '0')}`;
+
+      const months = [];
+      for (let i = 0; i < 3; i++) {
+        const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+        months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+      }
+
+      // Insert Returns
+      for (const month of months) {
+        let status: "Pending" | "Filed" | "Late" = 'Pending';
+        if (previousReturns === 'mark_all_previous' && month < currentReturnPeriodStr) {
+          status = 'Filed';
+        }
+
+        await tx.insert(gstReturns).values({
+          clientId: newClient.id,
+          month,
+          gstr1: status,
+          gstr3b: status,
+        });
+      }
+
+      const returns = await tx.select().from(gstReturns).where(eq(gstReturns.clientId, newClient.id));
+      return { ...newClient, returns };
+    });
+
+    res.status(201).json(finalData);
+  } catch (error) {
+    console.error("Error creating client:", error);
+    next(error);
+  }
+});
 
   app.post("/api/clients/with-history", async (req, res) => {
     try {

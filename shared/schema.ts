@@ -62,6 +62,7 @@ export const clients = pgTable("clients", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   gstin: text("gstin").notNull().unique(),
+  createdBy: uuid("created_by").references(() => users.id),
   assignedToId: uuid("assigned_to_id").references(() => users.id, { onDelete: "set null" }),
   gstUsername: text("gst_username"),
   gstPassword: text("gst_password"),
