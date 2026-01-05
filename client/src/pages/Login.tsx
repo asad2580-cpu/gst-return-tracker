@@ -170,26 +170,56 @@ export default function Login() {
   };
 
   const handleGoogleAuth = async (mode: "login" | "register") => {
-    setIsGoogleLoading(true);
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const fbUser = result.user;
+  setIsGoogleLoading(true);
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    const fbUser = result.user;
 
-      const data = await apiRequest("POST", "/auth/google-login", {
+    const response = await fetch("/api/auth/google-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         email: fbUser.email,
         name: fbUser.displayName,
-      });
+      }),
+    });
 
-      localStorage.setItem("accessToken", data.accessToken);
-      queryClient.setQueryData(["/api/auth/me"], data.user);
-      toast({ title: "Welcome!", description: `Logged in as ${data.user.name}` });
-      setLocation("/");
-    } catch (error: any) {
-      toast({ title: "Google Auth Failed", description: error.message, variant: "destructive" });
-    } finally {
-      setIsGoogleLoading(false);
+    const data = await response.json();
+
+    if (!response.ok) {
+      // Logic for new users
+      if (data.error === "USER_NOT_FOUND") {
+        toast({ 
+          title: "Account Not Found", 
+          description: "We've filled in your details. Please complete the registration (OTP verification) to continue." 
+        });
+        
+        // Populate the registration form with Google data
+        setRegisterForm(prev => ({
+          ...prev,
+          name: fbUser.displayName || "",
+          email: fbUser.email || ""
+        }));
+        
+        // Switch to register tab automatically
+        // Assuming you have a state for the active tab, e.g., setTab("register")
+        return; 
+      }
+      throw new Error(data.error || "Login failed");
     }
-  };
+
+    // Existing user -> Success
+    localStorage.setItem("accessToken", data.accessToken);
+    queryClient.setQueryData(["/api/auth/me"], data.user);
+    toast({ title: "Welcome back!", description: `Logged in as ${data.user.name}` });
+    setLocation("/dashboard");
+
+  } catch (error: any) {
+    toast({ title: "Google Auth Failed", description: error.message, variant: "destructive" });
+  } finally {
+    setIsGoogleLoading(false);
+  }
+};
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -400,7 +430,7 @@ export default function Login() {
 
             {/* --- REGISTER TAB --- */}
             <TabsContent value="register" className="space-y-4 pt-2">
-              <Button
+              {/* <Button
                 variant="outline"
                 className="w-full flex items-center justify-center gap-2 mb-2"
                 onClick={() => handleGoogleAuth("register")}
@@ -408,7 +438,7 @@ export default function Login() {
               >
                 <FcGoogle className="h-5 w-5" />
                 Quick Fill with Google
-              </Button>
+              </Button> */}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">

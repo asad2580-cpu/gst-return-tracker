@@ -159,9 +159,10 @@ router.post("/login", async (req: Request, res: Response) => {
 // 3. GOOGLE LOGIN (The missing piece!)
 router.post("/google-login", async (req: Request, res: Response) => {
   try {
-    const { email, name, photoURL } = req.body;
+    const { email, name } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
 
+    // 1. Check if user is banned (Deleted Staff)
     const [banned] = await db.select()
       .from(deletedStaffLog)
       .where(eq(deletedStaffLog.staffEmail, normalizedEmail))
@@ -169,26 +170,26 @@ router.post("/google-login", async (req: Request, res: Response) => {
 
     if (banned) {
       return res.status(403).json({ 
-        error: `You are no longer the staff of the admin ${banned.adminName}. Please register again.` 
+        error: `Access Denied: You were removed by Admin ${banned.adminName}.` 
       });
     }
 
-    // Check if user exists
+    // 2. Check if user exists
     let results = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
     let user = results[0];
 
-    // If user doesn't exist, create a new "Staff" account for them
+    // ❌ REMOVED: The auto-insert logic.
+    // ✅ ADDED: If user doesn't exist, tell the frontend to redirect to register.
     if (!user) {
-      const [newUser] = await db.insert(users).values({
-        username: normalizedEmail,
-        email: normalizedEmail,
-        password: "GOOGLE_AUTH_USER", // Dummy password
-        name: name || "Google User",
-        role: "admin", // Default role
-      }).returning();
-      user = newUser;
+      return res.status(404).json({ 
+        error: "USER_NOT_FOUND", 
+        message: "No account found with this Google email. Please register first.",
+        suggestedName: name,
+        suggestedEmail: normalizedEmail
+      });
     }
 
+    // 3. User exists -> Standard Login Flow
     const access = signAccess({ sub: user.id });
     const refresh = signRefresh({ sub: user.id });
 
