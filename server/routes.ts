@@ -605,77 +605,96 @@ export async function registerRoutes(
   // Update return status (GSTR-1 or GSTR-3B)
   // Update return status (GSTR-1 or GSTR-3B) - Admin only with validation rules
   // Update return status (GSTR-1 or GSTR-3B) - Admin only with validation rules
-  app.patch("/api/returns/:id", requireAdmin, async (req: any, res: any, next: any) => {
-    try {
-      const { gstr1, gstr3b } = req.body;
-      const returnId = req.params.id;
+  // Changed requireAdmin to requireAuth to let Staff in
+app.patch("/api/returns/:id", requireAuth, async (req: any, res: any, next: any) => {
+  try {
+    const { gstr1, gstr3b } = req.body;
+    const returnId = req.params.id;
+    const user = req.user;
 
-      // 1. Get current return
-      const [currentReturn] = await db
-        .select()
-        .from(gstReturns)
-        .where(eq(gstReturns.id, returnId))
-        .limit(1);
+    // 1. Get current return AND the associated client in one go (or two)
+    const [currentReturn] = await db
+      .select()
+      .from(gstReturns)
+      .where(eq(gstReturns.id, returnId))
+      .limit(1);
 
-      if (!currentReturn) {
-        return res.status(404).json("Return not found");
-      }
-
-      // 2. Logic to calculate the previous month string
-      const currentMonth = currentReturn.month; // e.g., "2024-03"
-      const [year, month] = currentMonth.split('-').map(Number);
-      const prevDate = new Date(year, month - 2, 1);
-      const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-
-      // 3. Fetch previous month's return for validation
-      const [prevReturn] = await db
-        .select()
-        .from(gstReturns)
-        .where(
-          and(
-            eq(gstReturns.clientId, currentReturn.clientId),
-            eq(gstReturns.month, prevMonthStr)
-          )
-        )
-        .limit(1);
-
-      // 4. Validation: Sequential Filing Rules
-      if (gstr1 === 'Filed' || gstr3b === 'Filed') {
-        if (prevReturn && (prevReturn.gstr1 !== 'Filed' || prevReturn.gstr3b !== 'Filed')) {
-          return res.status(400).json("Cannot mark as Filed: Previous month's GSTR-1 and GSTR-3B must both be Filed first");
-        }
-      }
-
-      // 5. Validation: GSTR-1 must come before GSTR-3B
-      if (gstr3b === 'Filed') {
-        const gstr1Status = gstr1 !== undefined ? gstr1 : currentReturn.gstr1;
-        if (gstr1Status !== 'Filed') {
-          return res.status(400).json("Cannot mark GSTR-3B as Filed: GSTR-1 must be Filed first");
-        }
-      }
-
-      // 6. Build and Execute Update
-      // Drizzle ignores 'undefined' values in the object, so we only update what's sent
-      const updatePayload: any = {};
-      if (gstr1 !== undefined) updatePayload.gstr1 = gstr1;
-      if (gstr3b !== undefined) updatePayload.gstr3b = gstr3b;
-
-      if (Object.keys(updatePayload).length === 0) {
-        return res.status(400).json("No fields to update");
-      }
-
-      const [updatedReturn] = await db
-        .update(gstReturns)
-        .set(updatePayload)
-        .where(eq(gstReturns.id, returnId))
-        .returning();
-
-      res.json(updatedReturn);
-    } catch (error) {
-      console.error("Error updating return:", error);
-      next(error);
+    if (!currentReturn) {
+      return res.status(404).json("Return not found");
     }
-  });
+
+    // --- NEW SECURITY CHECK ---
+    const [client] = await db
+      .select()
+      .from(clients)
+      .where(eq(clients.id, currentReturn.clientId))
+      .limit(1);
+
+    if (!client) {
+      return res.status(404).json("Client not found for this return");
+    }
+
+    // Check: If user is staff, are they assigned to this client?
+    // If user is admin, they can pass regardless.
+    if (user.role === 'staff' && client.assignedToId !== user.id) {
+      return res.status(403).json("Forbidden: You can only update returns for your assigned clients.");
+    }
+    // --------------------------
+
+    // 2. Logic to calculate the previous month string
+    const currentMonth = currentReturn.month; 
+    const [year, month] = currentMonth.split('-').map(Number);
+    const prevDate = new Date(year, month - 2, 1);
+    const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+    // 3. Fetch previous month's return for validation
+    const [prevReturn] = await db
+      .select()
+      .from(gstReturns)
+      .where(
+        and(
+          eq(gstReturns.clientId, currentReturn.clientId),
+          eq(gstReturns.month, prevMonthStr)
+        )
+      )
+      .limit(1);
+
+    // 4. Validation: Sequential Filing Rules
+    if (gstr1 === 'Filed' || gstr3b === 'Filed') {
+      if (prevReturn && (prevReturn.gstr1 !== 'Filed' || prevReturn.gstr3b !== 'Filed')) {
+        return res.status(400).json("Cannot mark as Filed: Previous month's GSTR-1 and GSTR-3B must both be Filed first");
+      }
+    }
+
+    // 5. Validation: GSTR-1 must come before GSTR-3B
+    if (gstr3b === 'Filed') {
+      const gstr1Status = gstr1 !== undefined ? gstr1 : currentReturn.gstr1;
+      if (gstr1Status !== 'Filed') {
+        return res.status(400).json("Cannot mark GSTR-3B as Filed: GSTR-1 must be Filed first");
+      }
+    }
+
+    // 6. Build and Execute Update
+    const updatePayload: any = {};
+    if (gstr1 !== undefined) updatePayload.gstr1 = gstr1;
+    if (gstr3b !== undefined) updatePayload.gstr3b = gstr3b;
+
+    if (Object.keys(updatePayload).length === 0) {
+      return res.status(400).json("No fields to update");
+    }
+
+    const [updatedReturn] = await db
+      .update(gstReturns)
+      .set(updatePayload)
+      .where(eq(gstReturns.id, returnId))
+      .returning();
+
+    res.json(updatedReturn);
+  } catch (error) {
+    console.error("Error updating return:", error);
+    next(error);
+  }
+});
 
 
   app.delete("/api/clients/:id", async (req, res) => {

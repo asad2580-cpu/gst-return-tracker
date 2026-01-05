@@ -1212,6 +1212,10 @@ export default function ClientList() {
                           (r) => r.month === month
                         );
 
+                        // NEW: Check if the current user is either an admin 
+                        // OR the staff member assigned to this specific client
+                        const canUserEdit = isAdmin || (user?.id === client.assignedToId);
+
                         return (
                           <TableCell
                             key={month}
@@ -1225,7 +1229,7 @@ export default function ClientList() {
                                     ? "Late"
                                     : "Pending")
                                 }
-                                canEdit={isAdmin}
+                                canEdit={canUserEdit} // Updated prop
                                 onClick={() =>
                                   handleStatusChange(
                                     client,
@@ -1243,7 +1247,7 @@ export default function ClientList() {
                                     ? "Late"
                                     : "Pending")
                                 }
-                                canEdit={isAdmin}
+                                canEdit={canUserEdit} // Updated prop
                                 onClick={() =>
                                   handleStatusChange(
                                     client,
