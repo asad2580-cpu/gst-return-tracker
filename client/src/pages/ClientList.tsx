@@ -405,6 +405,13 @@ export default function ClientList() {
   const isAdmin = user?.role === "admin";
 
   const months = useMemo(() => getFinancialYearMonths(), []);
+  // NEW: Calculate the specific month for filtering (Current Month - 1)
+  const targetReturnMonth = useMemo(() => {
+    const d = new Date();
+    // Move back one month
+    d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, []);
 
   const validateGSTIN = (gstin: string): boolean => {
     const gstinRegex =
@@ -413,16 +420,26 @@ export default function ClientList() {
   };
 
   const filteredClients = (clients || []).filter((client) => {
+    // 1. Search Filter (Business Name or GSTIN)
     const matchesSearch =
       client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       client.gstin.toLowerCase().includes(searchTerm.toLowerCase());
 
-    const matchesStatus =
-      statusFilter === "All"
-        ? true
-        : client.returns.some(
-          (r) => r.gstr1 === statusFilter || r.gstr3b === statusFilter
-        );
+    // 2. Status Filter (Only for the target return month)
+    if (statusFilter === "All") return matchesSearch;
+
+    const ret = client.returns.find((r) => r.month === targetReturnMonth);
+
+    // Determine the effective status for GSTR-1 and GSTR-3B for THIS month
+    // This logic matches how your table cells render statuses [cite: 544-555]
+    const gstr1Status = ret?.gstr1 ?? 
+      (isOverdue(targetReturnMonth, "gstr1") ? "Late" : "Pending");
+    
+    const gstr3bStatus = ret?.gstr3b ?? 
+      (isOverdue(targetReturnMonth, "gstr3b") ? "Late" : "Pending");
+
+    const matchesStatus = 
+      gstr1Status === statusFilter || gstr3bStatus === statusFilter;
 
     return matchesSearch && matchesStatus;
   });
