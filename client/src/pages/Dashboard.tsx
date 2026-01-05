@@ -23,19 +23,19 @@ function getDaysUntilDeadline(returnType: 'gstr1' | 'gstr3b'): number {
   const currentMonth = today.getMonth();
   const currentYear = today.getFullYear();
   const dueDay = returnType === 'gstr1' ? 11 : 20;
-  
+
   let dueDate = new Date(currentYear, currentMonth, dueDay);
   if (today > dueDate) {
     dueDate = new Date(currentYear, currentMonth + 1, dueDay);
   }
-  
+
   const diffTime = dueDate.getTime() - today.getTime();
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
 export default function Dashboard() {
   const { user } = useAuth();
-  
+
   const { data: clients, isLoading } = useQuery<ClientWithReturns[]>({
     queryKey: ['/api/clients'],
   });
@@ -55,20 +55,25 @@ export default function Dashboard() {
 
   const myClients = clients || [];
   const currentMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
-  
-  const stats = myClients.reduce((acc, client) => {
-    const returns = client.returns.find(r => r.month === currentMonth);
-    if (!returns) {
-      acc.pending += 2;
-      return acc;
-    }
+  const targetReturnMonth = (() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  })();
 
-    if (returns.gstr1 === 'Filed') acc.filed++;
-    else if (returns.gstr1 === 'Late') acc.late++;
+  const stats = myClients.reduce((acc, client) => {
+    const returns = client.returns.find(r => r.month === targetReturnMonth);
+
+    // Check GSTR-1
+    const g1 = returns?.gstr1 || 'Pending';
+    if (g1 === 'Filed') acc.filed++;
+    else if (g1 === 'Late') acc.late++;
     else acc.pending++;
 
-    if (returns.gstr3b === 'Filed') acc.filed++;
-    else if (returns.gstr3b === 'Late') acc.late++;
+    // Check GSTR-3B
+    const g3b = returns?.gstr3b || 'Pending';
+    if (g3b === 'Filed') acc.filed++;
+    else if (g3b === 'Late') acc.late++;
     else acc.pending++;
 
     return acc;
@@ -86,7 +91,7 @@ export default function Dashboard() {
   const staffWorkload = user?.role === 'admin' && staffList ? staffList.map(staff => {
     const staffClients = myClients.filter(c => c.assignedToId === staff.id);
     const pendingCount = staffClients.reduce((acc, client) => {
-      const ret = client.returns.find(r => r.month === currentMonth);
+      const ret = client.returns.find(r => r.month === targetReturnMonth);
       if (!ret) return acc + 2;
       if (ret.gstr1 !== 'Filed') acc++;
       if (ret.gstr3b !== 'Filed') acc++;
@@ -103,9 +108,9 @@ export default function Dashboard() {
   const daysToGSTR3B = getDaysUntilDeadline('gstr3b');
 
   const urgentClients = myClients.filter(client => {
-    const ret = client.returns.find(r => r.month === currentMonth);
-    if (!ret) return true;
-    return ret.gstr1 === 'Pending' || ret.gstr3b === 'Pending' || ret.gstr1 === 'Late' || ret.gstr3b === 'Late';
+    const ret = client.returns.find(r => r.month === targetReturnMonth);
+    // If it's not filed, it needs attention
+    return ret?.gstr1 !== 'Filed' || ret?.gstr3b !== 'Filed';
   }).slice(0, 5);
 
   return (
@@ -114,7 +119,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
           <p className="text-muted-foreground mt-1">
-            {getFinancialYear()} • {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+            {getFinancialYear()} • Returns for {new Date(targetReturnMonth + "-01").toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
           </p>
         </div>
         <Badge variant="outline" className="text-sm px-3 py-1.5">
@@ -136,7 +141,7 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </Card>
-        
+
         <Card className="border-l-4 border-l-amber-500">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Pending</CardTitle>
@@ -147,7 +152,7 @@ export default function Dashboard() {
             <p className="text-xs text-muted-foreground mt-1">Action required</p>
           </CardContent>
         </Card>
-        
+
         <Card className="border-l-4 border-l-red-500">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Late/Overdue</CardTitle>
@@ -234,7 +239,7 @@ export default function Dashboard() {
                     ))}
                   </Pie>
                   <Tooltip />
-                  <Legend verticalAlign="bottom" height={36}/>
+                  <Legend verticalAlign="bottom" height={36} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
