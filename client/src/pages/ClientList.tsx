@@ -188,30 +188,66 @@ export default function ClientList() {
   });
 
   const updateReturnMutation = useMutation({
-    mutationFn: async ({
-      returnId,
-      update,
-    }: {
-      returnId: string;
-      update: UpdateGstReturn;
-    }) => {
-      return await apiRequest("PATCH", `/api/returns/${returnId}`, update);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Status updated",
-        description: "Return status has been updated successfully.",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Cannot update status",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  mutationFn: async ({
+    returnId,
+    update,
+  }: {
+    returnId: string;
+    update: UpdateGstReturn;
+  }) => {
+    // apiRequest already handles status checking
+    const res = await apiRequest("PATCH", `/api/returns/${returnId}`, update);
+    
+    // Depending on your project's helper, it might return the parsed JSON already.
+    // If you get this error, it means 'res' is the data itself or a Response.
+    // Let's make it safe:
+    return res.json ? await res.json() : res;
+  },
+  // --- OPTIMISTIC UI LOGIC ---
+  onMutate: async ({ returnId, update }) => {
+    // 1. Cancel any outgoing refetches so they don't overwrite our optimistic update
+    await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
+
+    // 2. Snapshot the previous value for rollback if things go wrong
+    const previousClients = queryClient.getQueryData(["/api/clients"]);
+
+    // 3. Optimistically update the cache immediately
+    queryClient.setQueryData(["/api/clients"], (old: any) => {
+      if (!old) return [];
+      return old.map((client: any) => ({
+        ...client,
+        returns: client.returns?.map((r: any) =>
+          r.id === returnId ? { ...r, ...update } : r
+        ),
+      }));
+    });
+
+    // Return context with the snapshot
+    return { previousClients };
+  },
+  onError: (error: Error, _variables, context) => {
+    // 4. If the server says "No" (e.g., sequential filing error), 
+    // we roll back to the state before the click
+    if (context?.previousClients) {
+      queryClient.setQueryData(["/api/clients"], context.previousClients);
+    }
+    toast({
+      title: "Cannot update status",
+      description: error.message,
+      variant: "destructive",
+    });
+  },
+  onSettled: () => {
+    // 5. Always refetch after error or success to ensure 100% sync with DB
+    queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+  },
+  onSuccess: () => {
+    toast({
+      title: "Status updated",
+      description: "Return status has been updated successfully.",
+    });
+  },
+});
   const assignClientMutation = useMutation({
     mutationFn: async ({
       clientId,
