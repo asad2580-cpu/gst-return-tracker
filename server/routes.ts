@@ -149,37 +149,19 @@ export async function registerRoutes(
   // Get all clients (admin sees all, staff sees only assigned)
   app.get("/api/clients", requireAuth, async (req: any, res: any, next: any) => {
   try {
-    const user = req.user; // This comes from your attachUserFromHeader middleware
-    let clientsList;
-
-    if (user.role === 'admin') {
-      // ONLY fetch clients created by THIS specific admin
-      clientsList = await db
-        .select()
-        .from(clients)
-        .where(eq(clients.createdBy, user.id));
-    } else {
-      // Staff only sees their specifically assigned clients
-      clientsList = await db
-        .select()
-        .from(clients)
-        .where(eq(clients.assignedToId, user.id));
-    }
-
-    // Fetch returns for the filtered list
-    const clientsWithReturns = await Promise.all(
-      clientsList.map(async (client) => {
-        const returns = await db
-          .select()
-          .from(gstReturns)
-          .where(eq(gstReturns.clientId, client.id));
-
-        return {
-          ...client,
-          returns
-        };
-      })
-    );
+    const user = req.user;
+    
+    // We use Drizzle's relational query builder (db.query)
+    // It is much faster because it handles the "Join" in one single trip
+    const clientsWithReturns = await db.query.clients.findMany({
+      where: (clients, { eq }) => 
+        user.role === 'admin' 
+          ? eq(clients.createdBy, user.id) 
+          : eq(clients.assignedToId, user.id),
+      with: {
+        returns: true, // This fetches all returns for all clients in 1 trip!
+      },
+    });
 
     res.json(clientsWithReturns);
   } catch (error) {
