@@ -41,9 +41,9 @@ export default function Dashboard() {
   });
 
   const { data: staffList } = useQuery<User[]>({
-    queryKey: ['/api/users'],
-    enabled: user?.role === 'admin',
-  });
+  queryKey: ['/api/users', user?.id], // This ensures a fresh fetch for every user
+  enabled: !!user && user.role === 'admin',
+});
 
   if (isLoading) {
     return (
