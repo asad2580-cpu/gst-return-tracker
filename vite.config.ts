@@ -19,5 +19,19 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "client/dist"),
     emptyOutDir: true,
+    // --- NEW: Split chunks to reduce file size ---
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            // Put heavy charting and UI libraries in separate "buckets"
+            if (id.includes('recharts')) return 'vendor-charts';
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            return 'vendor-libs';
+          }
+        }
+      }
+    }
   },
 });
