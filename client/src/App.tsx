@@ -37,7 +37,7 @@ function Router() {
           </ProtectedRoute>
 
           {/* Login - Standard Route */}
-          <Route path="/login" component={Login} />
+          <Route path="/auth" component={Login} />
 
           {/* Protected Routes using children instead of 'component' prop */}
           <ProtectedRoute path="/dashboard">
