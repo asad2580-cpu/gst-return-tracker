@@ -66,30 +66,32 @@ const StatusBadge = ({
   onClick,
   canEdit,
   dueDate,
+  label, // Add this prop
 }: {
   status: GSTStatus;
   onClick?: () => void;
   canEdit: boolean;
   dueDate?: string;
+  label: string; // Add this prop
 }) => {
   const styles: Record<GSTStatus, string> = {
-    Filed:
-      "bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400",
-    Pending:
-      "bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400",
+    Filed: "bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400",
+    Pending: "bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400",
     Late: "bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400",
   };
 
   return (
-    <div className="flex flex-col items-end gap-0.5">
-      <Badge
-        className={`${styles[status]} cursor-${canEdit ? "pointer" : "default"
-          } transition-colors border-transparent`}
-        onClick={canEdit ? onClick : undefined}
-        data-testid="badge-status"
-      >
-        {status}
-      </Badge>
+    <div className="flex flex-col items-end gap-0.5 w-full">
+      <div className="flex items-center justify-end gap-2 w-full">
+        {/* Label added here */}
+        <span className="text-[10px] font-bold text-muted-foreground uppercase">{label}</span>
+        <Badge
+          className={`${styles[status]} cursor-${canEdit ? "pointer" : "default"} transition-colors border-transparent text-[10px] px-1.5 py-0`}
+          onClick={canEdit ? onClick : undefined}
+        >
+          {status}
+        </Badge>
+      </div>
       {dueDate && status === "Pending" && (
         <span className="text-[9px] text-muted-foreground">Due: {dueDate}</span>
       )}
@@ -129,6 +131,17 @@ function getDueDate(month: string, returnType: "gstr1" | "gstr3b") {
   const dueDay = returnType === "gstr1" ? 11 : 20;
   return `${dueDay}/${String(nextMonth).padStart(2, "0")}`;
 }
+
+const isFutureOrCurrentMonth = (monthStr: string) => {
+  const [year, month] = monthStr.split('-').map(Number);
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1; // JS months are 0-indexed
+
+  if (year > currentYear) return true;
+  if (year === currentYear && month >= currentMonth) return true;
+  return false;
+};
 
 function isOverdue(month: string, returnType: "gstr1" | "gstr3b") {
   const today = new Date();
@@ -188,66 +201,66 @@ export default function ClientList() {
   });
 
   const updateReturnMutation = useMutation({
-  mutationFn: async ({
-    returnId,
-    update,
-  }: {
-    returnId: string;
-    update: UpdateGstReturn;
-  }) => {
-    // apiRequest already handles status checking
-    const res = await apiRequest("PATCH", `/api/returns/${returnId}`, update);
-    
-    // Depending on your project's helper, it might return the parsed JSON already.
-    // If you get this error, it means 'res' is the data itself or a Response.
-    // Let's make it safe:
-    return res.json ? await res.json() : res;
-  },
-  // --- OPTIMISTIC UI LOGIC ---
-  onMutate: async ({ returnId, update }) => {
-    // 1. Cancel any outgoing refetches so they don't overwrite our optimistic update
-    await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
+    mutationFn: async ({
+      returnId,
+      update,
+    }: {
+      returnId: string;
+      update: UpdateGstReturn;
+    }) => {
+      // apiRequest already handles status checking
+      const res = await apiRequest("PATCH", `/api/returns/${returnId}`, update);
 
-    // 2. Snapshot the previous value for rollback if things go wrong
-    const previousClients = queryClient.getQueryData(["/api/clients"]);
+      // Depending on your project's helper, it might return the parsed JSON already.
+      // If you get this error, it means 'res' is the data itself or a Response.
+      // Let's make it safe:
+      return res.json ? await res.json() : res;
+    },
+    // --- OPTIMISTIC UI LOGIC ---
+    onMutate: async ({ returnId, update }) => {
+      // 1. Cancel any outgoing refetches so they don't overwrite our optimistic update
+      await queryClient.cancelQueries({ queryKey: ["/api/clients"] });
 
-    // 3. Optimistically update the cache immediately
-    queryClient.setQueryData(["/api/clients"], (old: any) => {
-      if (!old) return [];
-      return old.map((client: any) => ({
-        ...client,
-        returns: client.returns?.map((r: any) =>
-          r.id === returnId ? { ...r, ...update } : r
-        ),
-      }));
-    });
+      // 2. Snapshot the previous value for rollback if things go wrong
+      const previousClients = queryClient.getQueryData(["/api/clients"]);
 
-    // Return context with the snapshot
-    return { previousClients };
-  },
-  onError: (error: Error, _variables, context) => {
-    // 4. If the server says "No" (e.g., sequential filing error), 
-    // we roll back to the state before the click
-    if (context?.previousClients) {
-      queryClient.setQueryData(["/api/clients"], context.previousClients);
-    }
-    toast({
-      title: "Cannot update status",
-      description: error.message,
-      variant: "destructive",
-    });
-  },
-  onSettled: () => {
-    // 5. Always refetch after error or success to ensure 100% sync with DB
-    queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-  },
-  onSuccess: () => {
-    toast({
-      title: "Status updated",
-      description: "Return status has been updated successfully.",
-    });
-  },
-});
+      // 3. Optimistically update the cache immediately
+      queryClient.setQueryData(["/api/clients"], (old: any) => {
+        if (!old) return [];
+        return old.map((client: any) => ({
+          ...client,
+          returns: client.returns?.map((r: any) =>
+            r.id === returnId ? { ...r, ...update } : r
+          ),
+        }));
+      });
+
+      // Return context with the snapshot
+      return { previousClients };
+    },
+    onError: (error: Error, _variables, context) => {
+      // 4. If the server says "No" (e.g., sequential filing error), 
+      // we roll back to the state before the click
+      if (context?.previousClients) {
+        queryClient.setQueryData(["/api/clients"], context.previousClients);
+      }
+      toast({
+        title: "Cannot update status",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => {
+      // 5. Always refetch after error or success to ensure 100% sync with DB
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Status updated",
+        description: "Return status has been updated successfully.",
+      });
+    },
+  });
   const assignClientMutation = useMutation({
     mutationFn: async ({
       clientId,
@@ -468,13 +481,13 @@ export default function ClientList() {
 
     // Determine the effective status for GSTR-1 and GSTR-3B for THIS month
     // This logic matches how your table cells render statuses [cite: 544-555]
-    const gstr1Status = ret?.gstr1 ?? 
+    const gstr1Status = ret?.gstr1 ??
       (isOverdue(targetReturnMonth, "gstr1") ? "Late" : "Pending");
-    
-    const gstr3bStatus = ret?.gstr3b ?? 
+
+    const gstr3bStatus = ret?.gstr3b ??
       (isOverdue(targetReturnMonth, "gstr3b") ? "Late" : "Pending");
 
-    const matchesStatus = 
+    const matchesStatus =
       gstr1Status === statusFilter || gstr3bStatus === statusFilter;
 
     return matchesSearch && matchesStatus;
@@ -1261,53 +1274,28 @@ export default function ClientList() {
                       )}
 
                       {months.map((month) => {
-                        const ret = client.returns.find(
-                          (r) => r.month === month
-                        );
+                        const ret = client.returns.find((r) => r.month === month);
 
-                        // NEW: Check if the current user is either an admin 
-                        // OR the staff member assigned to this specific client
-                        const canUserEdit = isAdmin || (user?.id === client.assignedToId);
+                        // Logic: Can edit only if (Admin OR Assigned Staff) AND NOT a future/current month
+                        const isLocked = isFutureOrCurrentMonth(month);
+                        const canUserEdit = (isAdmin || user?.id === client.assignedToId) && !isLocked;
 
                         return (
-                          <TableCell
-                            key={month}
-                            className="text-center border-l border-border/50"
-                          >
-                            <div className="flex flex-col gap-1 items-center">
+                          <TableCell key={month} className="text-center border-l border-border/50">
+                            <div className="flex flex-col gap-2 items-center">
                               <StatusBadge
-                                status={
-                                  ret?.gstr1 ??
-                                  (isOverdue(month, "gstr1")
-                                    ? "Late"
-                                    : "Pending")
-                                }
-                                canEdit={canUserEdit} // Updated prop
-                                onClick={() =>
-                                  handleStatusChange(
-                                    client,
-                                    month,
-                                    "gstr1"
-                                  )
-                                }
+                                label="R1" // Label for GSTR-1
+                                status={ret?.gstr1 ?? (isOverdue(month, "gstr1") ? "Late" : "Pending")}
+                                canEdit={canUserEdit}
+                                onClick={() => handleStatusChange(client, month, "gstr1")}
                                 dueDate={getDueDate(month, "gstr1")}
                               />
 
                               <StatusBadge
-                                status={
-                                  ret?.gstr3b ??
-                                  (isOverdue(month, "gstr3b")
-                                    ? "Late"
-                                    : "Pending")
-                                }
-                                canEdit={canUserEdit} // Updated prop
-                                onClick={() =>
-                                  handleStatusChange(
-                                    client,
-                                    month,
-                                    "gstr3b"
-                                  )
-                                }
+                                label="3B" // Label for GSTR-3B
+                                status={ret?.gstr3b ?? (isOverdue(month, "gstr3b") ? "Late" : "Pending")}
+                                canEdit={canUserEdit}
+                                onClick={() => handleStatusChange(client, month, "gstr3b")}
                                 dueDate={getDueDate(month, "gstr3b")}
                               />
                             </div>

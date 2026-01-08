@@ -594,31 +594,35 @@ app.patch("/api/returns/:id", requireAuth, async (req: any, res: any, next: any)
     const returnId = req.params.id;
     const user = req.user;
 
-    // OPTIMIZATION 1: Use 'db.query' to get the Return AND the Client in ONE trip.
     const currentData = await db.query.gstReturns.findFirst({
       where: eq(gstReturns.id, returnId),
-      with: {
-        client: true, // This replaces the separate 'select from clients' query!
-      }
+      with: { client: true }
     });
 
     if (!currentData || !currentData.client) {
       return res.status(404).json("Return or Client not found");
     }
 
-    const { client } = currentData;
+    // --- 1. DECLARE DATE VARIABLES ONCE ---
+    const [year, month] = currentData.month.split('-').map(Number);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    // --- 2. TIME TRAVEL PROTECTION ---
+    if (year > currentYear || (year === currentYear && month >= currentMonth)) {
+      return res.status(400).json("Cannot update returns for the current or future months.");
+    }
 
     // Security Check
-    if (user.role === 'staff' && client.assignedToId !== user.id) {
+    if (user.role === 'staff' && currentData.client.assignedToId !== user.id) {
       return res.status(403).json("Forbidden: You can only update returns for your assigned clients.");
     }
 
-    // Logic for previous month
-    const [year, month] = currentData.month.split('-').map(Number);
+    // --- 3. PREVIOUS MONTH LOGIC (Using existing variables) ---
     const prevDate = new Date(year, month - 2, 1);
     const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
 
-    // OPTIMIZATION 2: Fetch only what we need for validation
     const [prevReturn] = await db
       .select({ gstr1: gstReturns.gstr1, gstr3b: gstReturns.gstr3b })
       .from(gstReturns)
