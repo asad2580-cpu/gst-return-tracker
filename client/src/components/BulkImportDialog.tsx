@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx'; 
 import { Button } from "./ui/button"; 
 import { useToast } from "@/hooks/use-toast"; 
-
+import { apiRequest } from '@/lib/queryClient'; // Import the centralized API request helper
 // 1. We added { onSuccess } here so the parent page can tell us how to refresh
 export function BulkImportDialog({ onSuccess }: { onSuccess?: () => void }) {
   const [data, setData] = useState<any[]>([]);
@@ -42,33 +42,28 @@ export function BulkImportDialog({ onSuccess }: { onSuccess?: () => void }) {
     setIsUploading(true);
 
     try {
-      const token = localStorage.getItem('accessToken'); 
-
-      const response = await fetch('/api/clients/bulk', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` 
-        },
-        body: JSON.stringify(data),
+      // 1. apiRequest ALREADY parses the JSON for you!
+      const result = await apiRequest("POST", "/api/clients/bulk", data);
+      
+      // 2. 'result' is now the object { message: "Successfully imported..." }
+      toast({ 
+        title: "Success!", 
+        description: result.message || "Clients imported successfully" 
       });
 
-      const result = await response.json();
-
-      if (response.ok) {
-        toast({ title: "Success!", description: result.message });
-        setData([]); 
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        
-        // 3. REPLACEMENT: Instead of window.location.reload(), we call the refresh function
-        if (onSuccess) {
-          onSuccess(); 
-        }
-      } else {
-        toast({ variant: "destructive", title: "Import Failed", description: result.error });
+      setData([]); 
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      
+      // 3. This triggers the refresh in ClientList to show the new data
+      if (onSuccess) {
+        onSuccess(); 
       }
-    } catch (error) {
-      toast({ variant: "destructive", title: "Error", description: "Connection failed" });
+    } catch (error: any) {
+      toast({ 
+        variant: "destructive", 
+        title: "Import Failed", 
+        description: error.message || "Connection failed" 
+      });
     } finally {
       setIsUploading(false);
     }

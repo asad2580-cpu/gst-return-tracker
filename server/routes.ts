@@ -45,17 +45,17 @@ interface BulkClientInput {
 
 /** Typed auth middlewares (safe checks) */
 function requireAuth(req: Request, res: Response, next: NextFunction) {
-  // only call isAuthenticated if it's present and a function
-  const authed = typeof req.isAuthenticated === "function" ? req.isAuthenticated() : false;
-  if (!authed) {
-    return res.status(401).json("Unauthorized");
+  // If we are using JWT, the user is attached to req.user by the auth middleware
+  if (!req.user) {
+    return res.status(401).json("Unauthorized: Please log in again");
   }
   next();
 }
 
 function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const authed = typeof req.isAuthenticated === "function" ? req.isAuthenticated() : false;
-  if (!authed || req.user?.role !== "admin") {
+  // Check if user exists and has the admin role
+  if (!req.user || req.user.role !== "admin") {
+    console.log(`Access Denied. User: ${req.user?.username}, Role: ${req.user?.role}`);
     return res.status(403).json("Forbidden: Admin access required");
   }
   next();
