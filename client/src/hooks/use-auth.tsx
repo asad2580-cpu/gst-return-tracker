@@ -1,3 +1,4 @@
+// client/src/hooks/use-auth.ts
 import { createContext, ReactNode, useContext } from "react";
 import {
   useQuery,
@@ -37,7 +38,6 @@ export const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast();
 
-  // Load authenticated user
   const {
     data: user,
     error,
@@ -45,24 +45,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   } = useQuery<SelectUser | undefined, Error>({
     queryKey: ["/api/auth/me"],
     queryFn: getQueryFn({ on401: "returnNull" }),
+    // Fintech tip: Disable staleTime to ensure we always check auth on mount
+    staleTime: 0, 
   });
 
-  // Login
   const loginMutation = useMutation({
     mutationFn: async (credentials: LoginData) => {
-      // note: path can be "/auth/login" or "/api/auth/login" — apiRequest handles both
       const data = await apiRequest("POST", "/auth/login", credentials);
-      return data; // expected shape: { user: ..., accessToken: ... }
+      return data;
     },
-
     onSuccess: (data) => {
-      // Save JWT
-      localStorage.setItem("accessToken", data.accessToken);
-
-      // Save user in cache
+      // SURGERY: Using sessionStorage instead of localStorage
+      // This ensures data is destroyed when the tab is closed.
+      sessionStorage.setItem("accessToken", data.accessToken);
       queryClient.setQueryData(["/api/auth/me"], data.user);
     },
-
     onError: (error: Error) => {
       toast({
         title: "Login failed",
@@ -72,21 +69,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  // Register
   const registerMutation = useMutation({
     mutationFn: async (data: RegisterData) => {
       const res = await apiRequest("POST", "/auth/register", data);
-      return res; // expected shape: { user: ..., accessToken: ... }
+      return res;
     },
-
     onSuccess: (data) => {
-      // Save JWT
-      localStorage.setItem("accessToken", data.accessToken);
-
-      // Save user in cache
+      sessionStorage.setItem("accessToken", data.accessToken);
       queryClient.setQueryData(["/api/auth/me"], data.user);
     },
-
     onError: (error: Error) => {
       toast({
         title: "Registration failed",
@@ -96,20 +87,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  // Logout
   const logoutMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/auth/logout");
-
-      // Clear token
-      localStorage.removeItem("accessToken");
+      // SURGERY: Clear sessionStorage
+      sessionStorage.removeItem("accessToken");
     },
-
     onSuccess: () => {
       queryClient.setQueryData(["/api/auth/me"], null);
       queryClient.clear();
     },
-
     onError: (error: Error) => {
       toast({
         title: "Logout failed",

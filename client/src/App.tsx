@@ -21,8 +21,32 @@ const Login = lazy(() => import("@/pages/Login"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 function Router() {
-  const { user } = useAuth();
-  
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-background">
+        <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+        <p className="text-sm font-medium text-muted-foreground animate-pulse">
+          Verifying secure session...
+        </p>
+      </div>
+    );
+  }
+
+  // --- LOGGED OUT BLOCK ---
+  if (!user) {
+    return (
+      <Switch>
+        <Route path="/auth" component={Login} />
+        <Route>
+          <Redirect to="/auth" />
+        </Route>
+      </Switch>
+    );
+  }
+
+  // --- AUTHENTICATED BLOCK ---
   return (
     <Layout>
       <Suspense fallback={
@@ -31,15 +55,12 @@ function Router() {
         </div>
       }>
         <Switch>
-          {/* Admin History */}
-          <ProtectedRoute path="/history">
-            {user?.role === 'admin' ? <HistoryPage /> : <Redirect to="/" />}
-          </ProtectedRoute>
+          {/* SURGERY START: If a logged-in user hits /auth, send them to dashboard */}
+          <Route path="/auth">
+            <Redirect to="/dashboard" />
+          </Route>
+          {/* SURGERY END */}
 
-          {/* Login - Standard Route */}
-          <Route path="/auth" component={Login} />
-
-          {/* Protected Routes using children instead of 'component' prop */}
           <ProtectedRoute path="/dashboard">
             <Dashboard />
           </ProtectedRoute>
@@ -54,6 +75,10 @@ function Router() {
 
           <ProtectedRoute path="/staff/:staffId/clients">
              <StaffClientList />
+          </ProtectedRoute>
+
+          <ProtectedRoute path="/history">
+            {user.role === 'admin' ? <HistoryPage /> : <Redirect to="/" />}
           </ProtectedRoute>
           
           <Route path="/">
